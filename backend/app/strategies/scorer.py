@@ -17,6 +17,7 @@ PRIORS: dict[str, tuple[float, float, float]] = {
     "S1": (0.40, 2.1, 1.0),
     "S2": (0.45, 1.8, 1.0),
     "S3": (0.55, 1.0, 1.0),
+    "S4": (0.38, 2.6, 1.0),
     "M": (0.40, 2.0, 1.0),
 }
 PRIOR_WEIGHT = 30
@@ -61,7 +62,7 @@ def estimate(
             l0 = _blend(l0, weight, float(stats["avg_loss_r"]), n)
     p = p0 + (sig.score - 70.0) / 100.0 * 0.15
     p = max(0.15, min(0.80, p))
-    if sig.strategy == "S3" and sig.take_profits:
+    if sig.take_profits and not sig.trailing_atr_mult:
         # Tek hedefli stratejide ortalama kazanç, hedefin R katıyla sınırlıdır
         w0 = min(w0, max(t.r for t in sig.take_profits))
     d = abs(sig.entry - sig.stop) / sig.entry if sig.entry > 0 else 0.0

@@ -38,6 +38,57 @@ def side_allowed(strategy: str, side: str, settings: StrategySettings) -> bool:
     return allowed == "both" or allowed == side.lower()
 
 
+TREND_STRATEGIES = ("S1", "S2", "S4")
+
+
+def passes_filters(sig: Signal, settings: StrategySettings, regime: str, funding_rate: float) -> bool:
+    """Tüm stratejilere ortak son süzgeç (canlı tarama ve backtest aynı kuralı kullanır).
+
+    - Yön izni (sN_sides)
+    - Sıkı rejim filtresi: trend stratejileri yalnızca rejim yönünde (boğada long, ayıda short),
+      ortalamaya dönüş yalnızca yatay piyasada işlem açar
+    - Kalabalık pozisyon filtresi: kendi yönümüze ödenen funding eşiği aşıyorsa girme
+    """
+    if not side_allowed(sig.strategy, sig.side, settings):
+        return False
+    if getattr(settings, "regime_filter", "normal") == "strict":
+        if sig.strategy in TREND_STRATEGIES:
+            if not ((regime == "BULL" and sig.side == "LONG") or (regime == "BEAR" and sig.side == "SHORT")):
+                return False
+        elif sig.strategy == "S3" and regime != "RANGE":
+            return False
+    fmax = float(getattr(settings, "funding_max", 0.0005))
+    if side_sign(sig.side) * funding_rate > fmax:
+        return False
+    return True
+
+
+EXIT_PROFILES = {
+    # (hedef merdiveni, iz süren stop çarpanı katsayısı, zaman stopu katsayısı)
+    "runner": ([(2.0, 0.25)], 1.25, 2.0),   # küçük kâr al, kalanı trende bırak
+    "quick": ([(1.0, 0.5), (2.0, 0.5)], None, 1.0),  # hızlı kâr realize et, iz süren stop yok
+}
+
+
+def apply_exit_profile(sig: Signal, settings: StrategySettings) -> Signal:
+    """Çıkış profilini sinyalin hedef/iz süren stop planına uygular (standard: dokunmaz)."""
+    prof = EXIT_PROFILES.get(getattr(settings, "exit_profile", "standard"))
+    if prof is None or sig.strategy == "S3":  # ortalamaya dönüş kendi tek hedefini korur
+        return sig
+    spec, trail_k, time_k = prof
+    sgn = side_sign(sig.side)
+    risk = abs(sig.entry - sig.stop)
+    sig.take_profits = [TakeProfit(r=r, price=sig.entry + sgn * r * risk, fraction=f) for r, f in spec]
+    sig.rr = max(r for r, _ in spec)
+    if trail_k is None:
+        sig.trailing_atr_mult = None
+    elif sig.trailing_atr_mult:
+        sig.trailing_atr_mult = round(sig.trailing_atr_mult * trail_k, 2)
+    if sig.time_stop_bars:
+        sig.time_stop_bars = int(sig.time_stop_bars * time_k)
+    return sig
+
+
 def clamp01(x: float) -> float:
     if x != x:  # NaN
         return 0.0

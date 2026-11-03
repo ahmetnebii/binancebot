@@ -77,12 +77,12 @@ const STATUS_META: Record<BacktestStatus, { label: string; tone: 'neutral' | 'ac
   cancelled: { label: 'İptal edildi', tone: 'warn' },
 };
 
-const STRAT_LABEL: Record<string, string> = { s1: 'S1 · Trend Kırılımı', s2: 'S2 · Göreli Güç', s3: 'S3 · Ortalamaya Dönüş' };
+const STRAT_LABEL: Record<string, string> = { s1: 'S1 · Trend Kırılımı', s2: 'S2 · Göreli Güç', s3: 'S3 · Ortalamaya Dönüş', s4: 'S4 · 4s Trend Takibi' };
 const isActive = (j: BacktestJob) => j.status === 'queued' || j.status === 'running';
 
 function strategiesText(st: BacktestJob['config']['strategies'] | undefined): string {
   if (!st) return '—';
-  const on = (['s1', 's2', 's3'] as const).filter((k) => st[k]).map((k) => k.toUpperCase());
+  const on = (['s1', 's2', 's3', 's4'] as const).filter((k) => st[k]).map((k) => k.toUpperCase());
   return on.length ? on.join(' + ') : '—';
 }
 
@@ -102,7 +102,7 @@ function ConfigCard({ blocked, onStarted }: { blocked: BacktestJob | undefined; 
   const [days, setDays] = useState<number>(90);
   const [topN, setTopN] = useState<number>(25);
   const [symbols, setSymbols] = useState<string[]>([]);
-  const [strat, setStrat] = useState<{ s1: boolean; s2: boolean; s3: boolean }>({ s1: true, s2: true, s3: false });
+  const [strat, setStrat] = useState<{ s1: boolean; s2: boolean; s3: boolean; s4: boolean }>({ s1: true, s2: true, s3: false, s4: false });
   const [equity, setEquity] = useState<number | null>(1000);
   const [slip, setSlip] = useState<number | null>(3);
   const [taker, setTaker] = useState<number | null>(0.0005);
@@ -115,7 +115,7 @@ function ConfigCard({ blocked, onStarted }: { blocked: BacktestJob | undefined; 
   useEffect(() => {
     if (!settings || inited.current) return;
     inited.current = true;
-    setStrat({ s1: settings.strategies.s1_enabled, s2: settings.strategies.s2_enabled, s3: settings.strategies.s3_enabled ?? false });
+    setStrat({ s1: settings.strategies.s1_enabled, s2: settings.strategies.s2_enabled, s3: settings.strategies.s3_enabled ?? false, s4: settings.strategies.s4_enabled ?? false });
     setEquity(settings.paper.starting_balance || 1000);
     setSlip(settings.paper.slippage_bps);
     setTaker(settings.paper.taker_fee);
@@ -128,7 +128,7 @@ function ConfigCard({ blocked, onStarted }: { blocked: BacktestJob | undefined; 
   );
   const known = useMemo(() => new Set((symList.data ?? []).map((s) => s.symbol)), [symList.data]);
   const unknown = symbols.filter((s) => known.size > 0 && !known.has(s));
-  const noStrategy = !strat.s1 && !strat.s2 && !strat.s3;
+  const noStrategy = !strat.s1 && !strat.s2 && !strat.s3 && !strat.s4;
   const dayPreset = (DAY_PRESETS as readonly string[]).includes(String(days)) ? String(days) : 'custom';
 
   const run = async () => {
@@ -225,8 +225,8 @@ function ConfigCard({ blocked, onStarted }: { blocked: BacktestJob | undefined; 
 
         <div>
           <div className="mb-1.5 text-[12px] font-medium text-muted">Stratejiler</div>
-          <div className="grid gap-2 sm:grid-cols-3">
-            {(['s1', 's2', 's3'] as const).map((k) => (
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+            {(['s1', 's2', 's3', 's4'] as const).map((k) => (
               <button
                 key={k}
                 type="button"
@@ -238,7 +238,7 @@ function ConfigCard({ blocked, onStarted }: { blocked: BacktestJob | undefined; 
               >
                 <span className="min-w-0">
                   <span className="block text-[12.5px] font-medium text-fg">{STRAT_LABEL[k]}</span>
-                  <span className="block text-[11px] text-subtle">{k === 's1' ? '15 dk kırılım' : k === 's2' ? '1 sa rotasyon' : 'yatay piyasada dönüş'}</span>
+                  <span className="block text-[11px] text-subtle">{k === 's1' ? '15 dk kırılım' : k === 's2' ? '1 sa rotasyon' : k === 's3' ? 'yatay piyasada dönüş' : '4 sa trend, az işlem'}</span>
                 </span>
                 <Switch checked={strat[k]} onChange={(v) => setStrat({ ...strat, [k]: v })} size="sm" />
               </button>

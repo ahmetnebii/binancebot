@@ -65,8 +65,9 @@ function markerText(kind: ChartMarker['kind'], msg: string): string {
   }
 }
 
-export function strategyTone(code: string): 'accent' | 'proj' | 'warn' | 'neutral' {
+export function strategyTone(code: string): 'accent' | 'proj' | 'warn' | 'neutral' | 'up' {
   if (code === 'S1') return 'accent';
+  if (code === 'S4') return 'up';
   if (code === 'S2') return 'proj';
   if (code === 'M') return 'neutral';
   return 'warn';

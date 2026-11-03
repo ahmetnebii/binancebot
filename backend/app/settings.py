@@ -151,6 +151,15 @@ class StrategySettings(BaseModel):
     s1_sides: Literal["both", "long", "short"] = "both"
     s2_sides: Literal["both", "long", "short"] = "both"
     s3_sides: Literal["both", "long", "short"] = "both"
+    # S4: 4 saatlik trend takibi (zaman serisi momentumu, düşük işlem sıklığı)
+    s4_enabled: bool = False
+    s4_donchian: int = Field(30, ge=10, le=120)
+    s4_atr_mult: float = Field(2.5, ge=1.0, le=6.0)
+    s4_sides: Literal["both", "long", "short"] = "both"
+    # Ortak filtreler (tüm stratejilere uygulanır)
+    regime_filter: Literal["normal", "strict"] = "normal"
+    funding_max: float = Field(0.0005, ge=0.0001, le=0.005)
+    exit_profile: Literal["standard", "runner", "quick"] = "standard"
 
 
 class PaperSettings(BaseModel):

@@ -23,8 +23,9 @@ from ..paths import VERSION
 from ..risk.manager import Breaker, RiskManager, loss_streak, open_risk_usdt
 from ..risk.sizing import approx_liq_price, symbol_class
 from ..settings import SettingsStore
-from ..strategies.base import StrategyContext, side_allowed
+from ..strategies.base import StrategyContext, apply_exit_profile, passes_filters
 from ..strategies.mean_reversion import MeanReversion
+from ..strategies.trend_follow import TrendFollow, is_4h_close
 from ..strategies.rs_rotation import RSRotation
 from ..strategies.scorer import estimate
 from ..strategies.trend_breakout import TrendBreakout
@@ -91,6 +92,7 @@ class Engine:
         self.s1 = TrendBreakout()
         self.s2 = RSRotation()
         self.s3 = MeanReversion()
+        self.s4 = TrendFollow()
         self.calibration: dict = {}
         self._last_report_day: Optional[int] = None
         self.scanner: dict = {"last_scan_at": None, "next_scan_at": None, "scanned_symbols": 0}
@@ -299,6 +301,18 @@ class Engine:
         t0 = time.perf_counter()
         if tf == "1h" and self.store.strategies.s2_enabled:
             found += self.s2.evaluate_universe(universe, ctx)
+        if tf == "1h" and self.store.strategies.s4_enabled and is_4h_close(ctx.now):
+            for sym in universe:
+                if sym in self.store.scanner.blacklist:
+                    continue
+                try:
+                    sig = self.s4.evaluate(sym, ctx)
+                except Exception:
+                    log.exception("S4 değerlendirme hatası (%s)", sym)
+                    continue
+                if sig:
+                    found.append(sig)
+            await asyncio.sleep(0)
         if tf == "15m":
             per_bar = [s for s, on in ((self.s1, self.store.strategies.s1_enabled), (self.s3, self.store.strategies.s3_enabled)) if on]
             for sym in universe if per_bar else []:
@@ -320,7 +334,11 @@ class Engine:
             "scanned_symbols": len(universe),
         }
         log.info("Tarama (%s): %d sembol, %d fırsat, %.0f ms", tf, len(universe), len(found), (time.perf_counter() - t0) * 1000)
-        found = [sg for sg in found if side_allowed(sg.strategy, sg.side, self.store.strategies)]
+        st = self.store.strategies
+        found = [
+            apply_exit_profile(sg, st) for sg in found
+            if passes_filters(sg, st, self.regime.name, ctx.funding_rate(sg.symbol))
+        ]
         for sig in found:
             await self._on_new_signal(sig)
 
@@ -442,7 +460,7 @@ class Engine:
     async def _check_strategy_health(self, strategy: str) -> None:
         """Son N işlemin beklentisi eşiğin altına düşen stratejiyi otomatik kapatır."""
         cfg = self.store.strategies
-        key = {"S1": "s1_enabled", "S2": "s2_enabled", "S3": "s3_enabled"}.get(strategy)
+        key = {"S1": "s1_enabled", "S2": "s2_enabled", "S3": "s3_enabled", "S4": "s4_enabled"}.get(strategy)
         if not cfg.health_monitor or key is None or not getattr(cfg, key):
             return
         closed = [

@@ -884,7 +884,7 @@ function ScannerTab({ s, onSaved }: { s: SettingsView; onSaved: (v: SettingsView
       </Section>
 
       <Section title="Stratejiler" description="Her strateji kendi koşullarıyla fırsat üretir; risk motoru hepsini aynı kurallarla değerlendirir.">
-        <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
+        <div className="grid gap-4 lg:grid-cols-2">
           <div className={clsx('rounded-xl border p-4', st.s1_enabled ? 'border-accent/30 bg-accent/[0.04]' : 'border-line')}>
             <Toggle
               checked={st.s1_enabled}
@@ -998,6 +998,86 @@ function ScannerTab({ s, onSaved }: { s: SettingsView; onSaved: (v: SettingsView
                 />
               </Field>
             </div>
+          </div>
+          <div className={clsx('rounded-xl border p-4', st.s4_enabled ? 'border-up/30 bg-up/[0.04]' : 'border-line')}>
+            <Toggle
+              checked={st.s4_enabled ?? false}
+              onChange={(v) => setSt({ ...st, s4_enabled: v })}
+              label={
+                <span className="flex items-center gap-2">
+                  S4 · 4s Trend Takibi <Badge tone="up">4 sa</Badge>
+                </span>
+              }
+              description="Orta vadeli trend takibi: 4 saatlik kanal kırılımı + EMA dizilimi + 7 günlük momentum. Az işlem açar, kazananları iz süren stopla uzun tutar; komisyon yükü düşüktür."
+            />
+            <div className="mt-3 flex items-center gap-2">
+              <span className="text-[11.5px] text-subtle">Yön</span>
+              <Segmented size="xs" value={st.s4_sides ?? 'both'} onChange={(v) => setSt({ ...st, s4_sides: v })} options={SIDE_OPTIONS} />
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <Field label="Kanal uzunluğu" hint="10 – 120 adet 4 saatlik mum">
+                <NumberInput value={st.s4_donchian ?? 30} onChange={(v) => v !== null && setSt({ ...st, s4_donchian: Math.round(v) })} suffix="mum" min={10} max={120} decimals={0} disabled={!st.s4_enabled} />
+              </Field>
+              <Field label="Stop (4s ATR katı)">
+                <NumberInput value={st.s4_atr_mult ?? 2.5} onChange={(v) => v !== null && setSt({ ...st, s4_atr_mult: v })} suffix="×" min={1} max={6} step={0.5} decimals={1} disabled={!st.s4_enabled} />
+              </Field>
+            </div>
+          </div>
+        </div>
+      </Section>
+
+      <Section
+        title="Ortak filtreler ve çıkış"
+        description="Tüm stratejilere uygulanır. En iyi değerleri Backtest → Otomatik ayar bulucu seçer; elle de değiştirebilirsin."
+      >
+        <div className="grid gap-4 lg:grid-cols-3">
+          <div className="rounded-xl border border-line p-4">
+            <div className="text-[13px] font-medium text-fg">Rejim filtresi</div>
+            <p className="mt-1 text-[11.5px] leading-relaxed text-muted">
+              Sıkı: trend stratejileri yalnızca piyasa yönünde (boğada long, ayıda short), ortalamaya dönüş yalnızca yatay piyasada işlem açar.
+            </p>
+            <Segmented
+              className="mt-3"
+              size="xs"
+              value={st.regime_filter ?? 'normal'}
+              onChange={(v) => setSt({ ...st, regime_filter: v })}
+              options={[
+                { value: 'normal', label: 'Normal' },
+                { value: 'strict', label: 'Sıkı' },
+              ]}
+            />
+          </div>
+          <div className="rounded-xl border border-line p-4">
+            <div className="text-[13px] font-medium text-fg">Kalabalık pozisyon (funding) sınırı</div>
+            <p className="mt-1 text-[11.5px] leading-relaxed text-muted">Kendi yönümüze ödenen 8 saatlik funding bu değeri aşıyorsa (herkes aynı taraftaysa) işleme girilmez.</p>
+            <div className="mt-3 max-w-[180px]">
+              <NumberInput
+                value={(st.funding_max ?? 0.0005) * 100}
+                onChange={(v) => v !== null && setSt({ ...st, funding_max: Math.min(0.5, Math.max(0.01, v)) / 100 })}
+                suffix="%"
+                min={0.01}
+                max={0.5}
+                step={0.01}
+                decimals={2}
+              />
+            </div>
+          </div>
+          <div className="rounded-xl border border-line p-4">
+            <div className="text-[13px] font-medium text-fg">Çıkış profili</div>
+            <p className="mt-1 text-[11.5px] leading-relaxed text-muted">
+              Standart: 1,5R ve 3R hedefleri + iz süren stop. Koştur: 2R'de küçük kâr al, kalanı trende bırak. Hızlı: 1R ve 2R'de tamamen çık.
+            </p>
+            <Segmented
+              className="mt-3"
+              size="xs"
+              value={st.exit_profile ?? 'standard'}
+              onChange={(v) => setSt({ ...st, exit_profile: v })}
+              options={[
+                { value: 'standard', label: 'Standart' },
+                { value: 'runner', label: 'Koştur' },
+                { value: 'quick', label: 'Hızlı' },
+              ]}
+            />
           </div>
         </div>
       </Section>

@@ -343,7 +343,7 @@ export interface BacktestConfigIn {
   days?: number;
   top_n?: number;
   symbols?: string[];
-  strategies?: { s1?: boolean; s2?: boolean; s3?: boolean };
+  strategies?: { s1?: boolean; s2?: boolean; s3?: boolean; s4?: boolean };
   initial_equity?: number;
   slippage_bps?: number;
   taker_fee?: number;
@@ -354,7 +354,7 @@ export interface BacktestConfig {
   days: number;
   top_n: number;
   symbols: string[];
-  strategies: { s1?: boolean; s2?: boolean; s3?: boolean };
+  strategies: { s1?: boolean; s2?: boolean; s3?: boolean; s4?: boolean };
   initial_equity: number;
   slippage_bps: number;
   taker_fee: number;
@@ -538,6 +538,13 @@ export interface StrategySettings {
   s1_sides?: StrategySides;
   s2_sides?: StrategySides;
   s3_sides?: StrategySides;
+  s4_enabled?: boolean;
+  s4_donchian?: number;
+  s4_atr_mult?: number;
+  s4_sides?: StrategySides;
+  regime_filter?: 'normal' | 'strict';
+  funding_max?: number;
+  exit_profile?: 'standard' | 'runner' | 'quick';
   s3_bb_k?: number;
   s3_rsi?: number;
   oi_confirmation?: boolean;

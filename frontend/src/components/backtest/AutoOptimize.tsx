@@ -14,9 +14,9 @@ const isNum = (x: unknown): x is number => typeof x === 'number' && Number.isFin
 const pctU = (v: number | null | undefined) => (isNum(v) ? fmtPct(v / 100, { sign: true, digits: 1 }) : '—');
 
 const BUDGETS = [
-  { value: 'hizli', label: 'Hızlı', hint: '16 aday · ~3-8 dk' },
-  { value: 'normal', label: 'Normal', hint: '32 aday · ~8-20 dk' },
-  { value: 'derin', label: 'Derin', hint: '64 aday · ~20-45 dk' },
+  { value: 'hizli', label: 'Hızlı', hint: '24 aday · ~5-10 dk' },
+  { value: 'normal', label: 'Normal', hint: '48 aday · ~10-25 dk' },
+  { value: 'derin', label: 'Derin', hint: '96 aday · ~25-60 dk' },
 ] as const;
 
 const VERDICT: Record<OptimizeResult['verdict'], { title: string; tone: 'up' | 'warn' | 'down'; icon: JSX.Element; cls: string }> = {
@@ -343,7 +343,7 @@ export function AutoOptimize({ blocked, onApplied }: { blocked: boolean; onAppli
       {node}
       <CardHeader
         title="Otomatik ayar bulucu"
-        subtitle="Tek tuş: yüzlerce strateji/yön/parametre kombinasyonu geçmişte denenir, en iyisi görülmemiş veride doğrulanır."
+        subtitle="Tek tuş: önce 4 strateji × yön × rejim yapıları taranır, sonra en iyi yapıların parametreleri inceltilir; kazanan, görülmemiş veride doğrulanır."
         icon={<Wand2 className="h-4 w-4 text-accent" />}
       />
       <div className="space-y-4 px-4 pb-5 pt-1">

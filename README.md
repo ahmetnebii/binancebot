@@ -128,7 +128,7 @@ Sonra tarayıcıda **http://localhost:8000** adresini aç. Port doluysa `--port 
    - @BotFather'dan bot oluştur ve token'ı **Ayarlar → Telegram** bölümüne kaydet.
    - Bota bir mesaj gönder, sonra **Chat ID bul** butonuna bas.
    - **Test mesajı** gönderip çalıştığını doğrula.
-6. **En iyi ayarları bul (önerilir):** **Backtest** sayfasının üstündeki **En iyi ayarları bul** butonuna bas (180 gün, Normal derinlik). Sistem arka planda strateji / yön / parametre kombinasyonlarını dener; geçmişin ilk 2/3'ünde seçer, son 1/3'ünde (hiç görmediği dönem) doğrular. Sonuç "Önerilen" ise **Bu ayarları uygula** de; tarama bundan sonra bu ayarlarla fırsat arar. "Avantaj yok" derse otomatik modu açma. Sayfayı kapatabilirsin, iş sunucuda sürer.
+6. **En iyi ayarları bul (önerilir):** **Backtest** sayfasının üstündeki **En iyi ayarları bul** butonuna bas (180 gün, Normal derinlik). Sistem arka planda 4 stratejiyi (S1 kırılım, S2 göreli güç, S3 ortalamaya dönüş, S4 4 saatlik trend takibi), yön izinlerini, rejim filtresini, funding sınırını, çıkış profilini ve parametreleri iki aşamada dener; geçmişin ilk 2/3'ünde seçer, son 1/3'ünde (hiç görmediği dönem) doğrular. Sonuç "Önerilen" ise **Bu ayarları uygula** de; tarama bundan sonra bu ayarlarla fırsat arar. "Avantaj yok" derse otomatik modu açma. Sayfayı kapatabilirsin, iş sunucuda sürer.
 7. **Otomatik mod:** Üst çubuktaki anahtarla aç veya kapat. Ortam değiştiğinde güvenlik için kendiliğinden kapanır.
 
 ## Geliştirme (Docker'sız)

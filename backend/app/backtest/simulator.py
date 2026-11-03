@@ -25,16 +25,18 @@ from ..models import Position, SymbolInfo, side_sign
 from ..risk.manager import RiskManager, RiskState
 from ..risk.sizing import symbol_class
 from ..settings import RiskSettings, ScannerSettings, StrategySettings
-from ..strategies.base import StrategyContext, side_allowed
+from ..strategies.base import StrategyContext, apply_exit_profile, passes_filters
 from ..strategies.mean_reversion import MeanReversion
 from ..strategies.rs_rotation import RSRotation
 from ..strategies.scorer import estimate
 from ..strategies.trend_breakout import TrendBreakout
+from ..strategies.trend_follow import TrendFollow
 from ..util import DAY_MS, utc_week_start
 from .data import BacktestCancelled, HistoryData
 
 STEP = 900_000
 HOUR = 3_600_000
+H4 = 4 * HOUR
 FUNDING_DEFAULT = 0.0001
 MAX_BARS_15M = 500
 MAX_BARS_1H = 400
@@ -55,6 +57,7 @@ class BacktestConfig:
     risk: RiskSettings
     strategies: StrategySettings
     scanner: ScannerSettings
+    s4: bool = False
 
 
 class SliceBuffer:
@@ -155,7 +158,7 @@ class Backtester:
         self.view = HistView(self.symbols)
         self.rm = RiskManager(SimpleNamespace(risk=cfg.risk), None)  # type: ignore[arg-type]
         self.regime = RegimeDetector()
-        self.s1, self.s2, self.s3 = TrendBreakout(), RSRotation(), MeanReversion()
+        self.s1, self.s2, self.s3, self.s4 = TrendBreakout(), RSRotation(), MeanReversion(), TrendFollow()
         self.positions: dict[str, SimPos] = {}
         self.pending: dict[str, dict] = {}
         self.trades: list[dict] = []
@@ -393,9 +396,10 @@ class Backtester:
         s = sig.symbol
         if s in self.positions or s in self.pending:
             return
-        if not side_allowed(sig.strategy, sig.side, self.cfg.strategies):
-            return
         mi = self.view.marks.get(s)
+        if not passes_filters(sig, self.cfg.strategies, self.regime.current.name, mi.funding_rate if mi else 0.0):
+            return
+        apply_exit_profile(sig, self.cfg.strategies)
         _, ev = estimate(sig, self.cfg.taker_fee, self.slip, mi.funding_rate if mi else 0.0)
         sig.ev_r = ev
         if ev < self.cfg.risk.min_ev_r:
@@ -545,6 +549,11 @@ class Backtester:
             found = []
             if hour_close and cfg.s2:
                 found += self.s2.evaluate_universe([s for s in self.symbols if s in bars_now], ctx)
+            if cfg.s4 and close_t % H4 == 0:
+                for s in bars_now:
+                    sig = self.s4.evaluate(s, ctx)
+                    if sig:
+                        found.append(sig)
             for s in bars_now:
                 if cfg.s1:
                     sig = self.s1.evaluate(s, ctx)
