@@ -1,0 +1,22 @@
+services:
+  bot:
+    build: .
+    container_name: binancebot
+    restart: unless-stopped
+    # Panel yalnızca sunucunun kendisinden erişilebilir. Kendi bilgisayarından
+    # SSH tüneliyle bağlan:  ssh -L 8000:127.0.0.1:8000 kullanici@sunucu
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./data:/data          # veritabanı + master.key (yedekle!)
+    environment:
+      TZ: UTC
+      # HTTPS sunan bir ters proxy (ör. Caddy) arkasındaysan aç:
+      # BB_COOKIE_SECURE: "1"
+      # Şifreleme ana anahtarını dosya yerine ortam değişkeninden vermek istersen:
+      # BB_MASTER_KEY: "..."
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

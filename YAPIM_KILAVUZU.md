@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **Sürüm** | 1.0 |
+| **Sürüm** | 1.1 |
 | **Tarih** | 3 Kasım 2026 |
-| **Durum** | Planlama (henüz kod yazılmadı) |
+| **Durum** | v0.1 uygulandı: tarama, stratejiler, risk motoru, simülasyon/testnet/canlı broker, kontrol paneli (bkz. Bölüm 26) |
 | **Kapsam** | Binance USDⓈ-M Perpetual (USDT marjinli) vadeli işlemler |
 
 > **Özet**
@@ -17,7 +17,7 @@
 > **ÜCRETLİ API KULLANILMAYACAK.** Veri ve işlem altyapısının tamamı şunlara dayanır: Binance'in ücretsiz REST/WebSocket API'leri, Binance'in ücretsiz tarihsel veri arşivi (`data.binance.vision`) ve açık kaynak kütüphaneler. Kapsam dışı kalanlar: ücretli veri sağlayıcıları (CoinGlass, Glassnode, CryptoQuant, Kaiko vb. ücretli planlar), TradingView webhook'ları, Twitter/X API, ücretli LLM API'leri ve ücretli sinyal servisleri.
 
 > [!CAUTION]
-> **API anahtarlarını sohbete, koda veya Git'e asla yazma.** Anahtarlar yalnızca botun çalışacağı sunucuda, `.env` dosyasında (dosya izni `600`) durur. Geliştirme ve testler **Demo/Testnet anahtarlarıyla** yapılır. Canlı anahtar en son aşamada ve sadece sunucuya girilir. Anahtarda **çekim (withdraw) yetkisi kapalı**, **IP kısıtlaması açık** olmalıdır.
+> **API anahtarlarını sohbete, koda veya Git'e asla yazma.** Anahtarlar panelin **Ayarlar → Bağlantı** bölümünden girilir ve sunucudaki veritabanında **şifreli** saklanır (ana anahtar `data/master.key`, izin `600`). Kaydedilen anahtar arayüze bir daha gösterilmez, sadece son 4 karakteri görünür. Geliştirme ve testler **Demo/Testnet anahtarlarıyla** yapılır, canlı anahtar en son aşamada girilir. Anahtarda **çekim (withdraw) yetkisi kapalı**, **IP kısıtlaması açık** olmalıdır.
 
 > [!WARNING]
 > Kaldıraçlı kripto vadeli işlemleri çok yüksek risk içerir ve yatırdığın paranın tamamını kaybedebilirsin. Bu kılavuz kazanç garantisi ya da yatırım tavsiyesi değildir. Amacı, riski ölçülebilir ve kontrollü hâle getiren profesyonel bir sistem kurmaktır.
@@ -52,6 +52,7 @@
 23. Ücretsiz Kaynaklar ve Kullanılmayacak Ücretli Servisler
 24. Sözlük
 25. Sonraki Adım: Senden İhtiyacım Olanlar
+26. Kontrol Paneli ve Mevcut Uygulama (v0.1)
 - Ekler: A) `.env.example` · B) Büyüklük + kaldıraç referans kodu · C) Resmi kaynaklar
 
 ---
@@ -270,7 +271,7 @@ flowchart LR
   - ❌ Spot/Margin: kapalı (funding hasadı fazına kadar)
 - [ ] **IP kısıtlaması zorunlu.** Binance, IP kısıtlaması olmayan anahtarlarla işlemi varsayılan güvenlik ayarlarında engelliyor ve kullanılmayan kısıtsız anahtarları silebiliyor. Bu yüzden sunucunun **sabit IP adresi** olmalı.
 - [ ] Demo/Testnet için ayrı anahtar.
-- [ ] Anahtarlar sadece sunucudaki `.env` dosyasında. Sohbete, koda ve Git'e yazılmaz.
+- [ ] Anahtarlar panelden girilir ve sunucuda şifreli saklanır. Sohbete, koda ve Git'e yazılmaz.
 
 ### 4.3 Hesap ayarları (bot her açılışta kontrol eder, gerekirse düzeltir)
 
@@ -980,7 +981,8 @@ Bir strateji kapıları geçemezse Faz 3'e dönülür. **Bu normaldir.** Kötü 
 ## 17. Güvenlik
 
 - **API anahtarı:** Ed25519, çekim yetkisi kapalı, IP kısıtlı, mümkünse ayrı alt hesapta, 3–6 ayda bir yenilenir.
-- **Sırlar:** `.env` dosyasında (izin `600`) ve `.gitignore` içinde tutulur. Repoda sadece `.env.example` bulunur. İsteğe bağlı olarak `sops` + `age` ile şifrelenebilir (ücretsiz).
+- **Sırlar:** API anahtarları ve Telegram token panelden girilir, veritabanında Fernet ile şifreli tutulur. Ana anahtar `data/master.key` dosyasındadır (izin `600`) ya da `BB_MASTER_KEY` ortam değişkeniyle verilir. Gizli değerler API yanıtlarında ve loglarda asla yer almaz. `data/` klasörü Git'e girmez ve düzenli yedeklenmelidir.
+- **Panel erişimi:** Panel parolayla korunur (scrypt özeti, HttpOnly + SameSite=Strict çerez, CSRF başlığı, hatalı girişte geçici kilit). Varsayılan olarak yalnızca `127.0.0.1` dinlenir; uzaktan erişim SSH tüneli veya HTTPS ters proxy ile yapılır.
 - **Sunucu:**
   - Sadece SSH anahtarıyla giriş; parola ve root girişi kapalı
   - `ufw` güvenlik duvarı (sadece SSH açık), `fail2ban`
@@ -1262,25 +1264,70 @@ binancebot/
 
 ---
 
-## Ek A: `.env.example`
+## 26. Kontrol Paneli ve Mevcut Uygulama (v0.1)
 
-```dotenv
-# Ortam: demo | live
-BINANCE_ENV=demo
+### 26.1 Çalışma modları
 
-# Ed25519 kullanılıyorsa (önerilen)
-BINANCE_API_KEY=
-BINANCE_PRIVATE_KEY_PATH=/run/secrets/binance_ed25519.pem
+| Mod | Davranış |
+|---|---|
+| **Otomatik mod AÇIK** | Tarayıcı fırsat bulduğunda risk motoru onaylarsa sistem işlemi kendisi açar. Bu sırada fırsatlar panelde görünmeye ve elle de işlenebilmeye devam eder |
+| **Otomatik mod KAPALI** | Fırsatlar yine taranır, puanlanır ve **Fırsatlar** ekranına düşer (Telegram bildirimi de gelir). İşlemi sen açarsın: tek tıkla, istersen riski veya kaldıracı değiştirerek. Ayrıca **Yeni İşlem** biletiyle istediğin sembolde manuel işlem açabilirsin |
+| **Durdur** | Yeni otomatik işlem açılmaz; açık pozisyonlar yönetilmeye (stop, hedef, iz süren stop) devam eder |
 
-# HMAC kullanılıyorsa
-BINANCE_API_SECRET=
+Ortam (Simülasyon / Testnet / Canlı) her değiştiğinde otomatik mod güvenlik için kapanır. Canlıya geçiş "CANLI" yazılarak onaylanır.
 
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_CHAT_ID=
+### 26.2 Sermayeye oranlı çalışma
 
-DATABASE_URL=postgresql://bot:DEGISTIR@postgres:5432/bot
-LOG_LEVEL=INFO
-```
+Başlangıç sermayesi sabit değildir; sistem her işlemde **güncel özsermayeyi** kullanır:
+- **İşlem riski** özsermayenin yüzdesidir (profil: Temkinli %0,5 · Dengeli %0,75 · Agresif %1,5; tavan %2).
+- **Pozisyon büyüklüğü** risk ve stop mesafesinden hesaplanır, **kaldıraç** bu büyüklüğü marjin bütçesine sığdıran en düşük değerdir (Bölüm 10.2).
+- **Sermaye kademeleri:** Küçük hesapta eşzamanlı pozisyon sayısı otomatik sınırlanır (<50 USDT: 1, <200: 2, <1.000: 3, üstü: profil limiti).
+- Borsanın minimum emir büyüklüğüne takılan işlemler, nedeni açıklanarak reddedilir.
+
+### 26.3 Pozisyon detay ekranı
+
+- Canlı mum grafiği (1 dk – 4 sa), giriş çizgisi, **kırmızı stop bölgesi**, **yeşil hedef bölgesi**, TP çizgileri, **likidasyon çizgisi**, giriş/kısmi çıkış işaretleri.
+- **Tahmini ilerleme** (grafiğin üzerine çizilir):
+  - **Volatilite konisi:** Fiyatın önümüzdeki barlarda büyük olasılıkla (1σ ≈ %68, 2σ ≈ %95) kalacağı aralık.
+  - **İvme yolu:** Son barların ortalama getirisi sürerse fiyatın izleyeceği yol.
+  - **Hedefe stop'tan önce ulaşma olasılığı:** Hem yönsüz (sürüklenmesiz) modelle hem de ivme varsayımıyla gösterilir.
+  - **Tahmini sonuçlanma süresi:** Hedef veya stop'tan birine ulaşmak için beklenen süre.
+- Bunlar **istatistiksel tahminlerdir, söz değildir**. Karar desteği içindir.
+- **Eylemler:** Kapat, %50 kapat, stop'u başa-baş çek, stop/hedef düzenle.
+
+### 26.4 Uygulanan bileşenler
+
+| Bileşen | Durum |
+|---|---|
+| Binance REST (HMAC/Ed25519 imza, ağırlık takibi, saat senkronu) | ✅ |
+| WebSocket `/market` akışları, otomatik yeniden bağlanma, 23 saatlik rotasyon, boşluk doldurma | ✅ |
+| Evren seçimi (hacim, yaş, delist, fiyat adımı) | ✅ |
+| Rejim tespiti, S1 Trend Kırılımı, S2 Göreli Güç Rotasyonu, EV tahmini | ✅ |
+| Risk motoru (çarpanlar, portföy limitleri, korelasyon kümesi, devre kesiciler) | ✅ |
+| Simülasyon broker'ı (kayma, komisyon, TP/SL/likidasyon/funding) | ✅ |
+| Binance broker (Algo API stop, reduce-only TP, kullanıcı akışı, mutabakat) | ✅ yazıldı, **testnet'te doğrulanacak** |
+| Pozisyon yönetimi (TP merdiveni, başa-baş, iz süren stop, zaman stopu) | ✅ |
+| Kontrol paneli, şifreli ayarlar, Telegram bildirim ve komutları | ✅ |
+| Backtest motoru, walk-forward, Monte Carlo (Faz 4) | ⏳ sıradaki |
+| S3/S4/S6 stratejileri, ML meta-etiketleme (Faz 10) | ⏳ |
+
+> [!IMPORTANT]
+> Strateji parametreleri henüz backtest ile doğrulanmadı. Beklenti (EV) tahminleri şimdilik varsayılan istatistiklerle başlar ve kapanan işlemler biriktikçe gerçek sonuçlarla güncellenir. Bu yüzden canlıya geçmeden önce **Simülasyon → Testnet** aşamalarını tamamla.
+
+---
+
+## Ek A: Ortam değişkenleri
+
+API anahtarları ve Telegram token'ı ortam değişkeniyle değil, **panelden** girilir (şifreli saklanır). Sunucu tarafında yalnızca şu değişkenler kullanılır:
+
+| Değişken | Varsayılan | Açıklama |
+|---|---|---|
+| `BB_DATA_DIR` | `./data` | Veritabanı ve `master.key` klasörü (yedekle) |
+| `BB_HOST` / `BB_PORT` | `127.0.0.1` / `8000` | Panelin dinlediği adres |
+| `BB_MASTER_KEY` | (dosyadan) | Şifreleme ana anahtarı; verilmezse `data/master.key` üretilir |
+| `BB_COOKIE_SECURE` | `0` | HTTPS ters proxy arkasında `1` yap |
+| `BB_DATA_SOURCE` | `binance` | `synthetic` yalnızca geliştirme içindir (sahte veri, zorunlu simülasyon) |
+| `BB_FRONTEND_DIST` | `frontend/dist` | Derlenmiş arayüz klasörü |
 
 ## Ek B: Büyüklük ve kaldıraç referans kodu
 
