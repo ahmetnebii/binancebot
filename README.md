@@ -82,6 +82,38 @@ ssh -L 8000:127.0.0.1:8000 kullanici@SUNUCU_IP
 
 Sonra tarayıcıda **http://localhost:8000** adresini aç.
 
+## Kendi bilgisayarında çalıştırma (Docker'sız)
+
+Gerekenler: **Git**, **Python 3.11+**, **Node.js 18+** (20+ önerilir).
+
+macOS / Linux:
+
+```bash
+git clone https://github.com/ahmetnebii/binancebot.git
+cd binancebot
+python3 -m venv .venv
+.venv/bin/pip install -r backend/requirements.txt
+cd frontend && npm ci && npm run build && cd ..
+cd backend && ../.venv/bin/python -m app
+```
+
+Windows (PowerShell):
+
+```powershell
+git clone https://github.com/ahmetnebii/binancebot.git
+cd binancebot
+py -m venv .venv
+.venv\Scripts\pip install -r backend\requirements.txt
+cd frontend; npm ci; npm run build; cd ..
+cd backend; ..\.venv\Scripts\python -m app
+```
+
+Sonra tarayıcıda **http://localhost:8000** adresini aç. Port doluysa `--port 8080` ekle.
+
+**Güncelleme:** Proje klasöründe `git pull` çalıştır, ardından `frontend` içinde `npm ci && npm run build` yap ve sunucuyu yeniden başlat. Docker kullanıyorsan `docker compose up -d --build` yeterli.
+
+> Ev bilgisayarında canlı/testnet işlem yapacaksan API anahtarının IP kısıtlamasına ev IP'ni eklemelisin. Ev IP'si değişebildiği için 7/24 canlı işlem için sabit IP'li bir VPS önerilir. Simülasyon ve backtest için anahtar gerekmez.
+
 ## İlk kurulum
 
 1. **Parola oluştur:** İlk açılışta panel parolası istenir (en az 10 karakter).
