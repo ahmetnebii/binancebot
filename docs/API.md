@@ -418,6 +418,8 @@ interface Calibration {
 
 Kalibrasyon uygulandığında fırsatların kazanma olasılığı ve beklenti (EV) tahmini, varsayılan değerler yerine bu ölçülmüş istatistiklerle (canlı sonuçlarla harmanlanarak) hesaplanır.
 
+**İşaret notu:** `calibration[*].avg_loss_r` kaybın **pozitif büyüklüğüdür** (ör. 0.94 = ortalama −0,94R); `summary.avg_loss_r` ve `by_strategy[].avg_loss_r` ise **negatif** R değeridir.
+
 ### Ayarlar
 
 | Metot | Yol | Gövde | Yanıt |
