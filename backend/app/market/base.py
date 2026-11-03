@@ -141,8 +141,10 @@ class MarketData:
 
     source = "base"
     base_tfs: tuple[str, ...] = ("15m", "1h")
+    supports_liquidations = False
 
     def __init__(self) -> None:
+        self.liquidations: dict[str, deque[tuple[int, str, float]]] = {}
         self.symbols: dict[str, SymbolInfo] = {}
         self.universe: list[str] = []
         self.tickers: dict[str, Ticker] = {}
@@ -177,6 +179,32 @@ class MarketData:
 
     def buffer(self, symbol: str, tf: str) -> Optional[CandleBuffer]:
         return self.buffers.get((symbol, tf))
+
+    def record_liquidation(self, symbol: str, side: str, notional: float, ts: int) -> None:
+        dq = self.liquidations.get(symbol)
+        if dq is None:
+            dq = deque(maxlen=2000)
+            self.liquidations[symbol] = dq
+        dq.append((ts, side, notional))
+
+    def liquidation_sums(self, symbol: str, window_ms: int) -> tuple[Optional[float], Optional[float]]:
+        """(likide edilen long'lar, likide edilen short'lar) USDT; kaynak desteklemiyorsa (None, None).
+
+        Binance likidasyon akışında SELL emri bir long pozisyonun, BUY emri bir short
+        pozisyonun likidasyonudur. Akış bir örneklemdir (sembol başına saniyede en fazla bir olay).
+        """
+        if not self.supports_liquidations:
+            return None, None
+        cutoff = now_ms() - window_ms
+        long_liq = short_liq = 0.0
+        for ts, side, notional in self.liquidations.get(symbol, ()):
+            if ts < cutoff:
+                continue
+            if side == "SELL":
+                long_liq += notional
+            else:
+                short_liq += notional
+        return long_liq, short_liq
 
     def volume_rank(self, symbol: str) -> int:
         """24 saatlik USDT hacmine göre sıra (1 = en yüksek)."""

@@ -144,6 +144,7 @@ class TelegramPatch(BaseModel):
     clear_token: bool = False
     notify_signals: Optional[bool] = None
     notify_trades: Optional[bool] = None
+    daily_report: Optional[bool] = None
 
 
 @router.put("/telegram")

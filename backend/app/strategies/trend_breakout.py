@@ -4,7 +4,8 @@ from __future__ import annotations
 import math
 from typing import Optional
 
-from ..features.indicators import adx, atr, bollinger, ema, pct_rank_last, zscore_last
+from ..features.mtf import four_hour_trend
+from ..features.indicators import adx, atr, bollinger, ema, log_volume_z, pct_rank_last
 from ..models import Signal
 from .base import StrategyContext, clamp01, make_signal
 
@@ -55,7 +56,7 @@ class TrendBreakout:
         at = float(atr(h, l, c, 14)[-1])
         if not math.isfinite(at) or at <= 0:
             return None
-        vol_z = zscore_last(qv, 96)
+        vol_z = log_volume_z(qv, 96)
         if vol_z < cfg.s1_vol_z:
             return None
         e20 = float(ema(c, 20)[-1])
@@ -88,6 +89,14 @@ class TrendBreakout:
             bc = btc["c"]
             rs = (c1[-1] / c1[-25] - 1.0) - (bc[-1] / bc[-25] - 1.0)
 
+        # Zaman dilimi uyumu: 1 saat filtreyle zaten uyumlu; 15 dk ve 4 saat ek teyit
+        e50_15 = float(ema(c, 50)[-1])
+        tf15_ok = (sgn * (close - e50_15) > 0) and (sgn * (e20 - e50_15) > 0)
+        t4 = four_hour_trend(ctx.market, symbol)
+        want = "up" if side == "LONG" else "down"
+        aligned = 1 + int(tf15_ok) + int(t4 == want)
+        mtf_s = 5.0 * (aligned - 1) - (5.0 if t4 is not None and t4 not in (want, "flat") else 0.0)
+
         trend_s = clamp01((adx1 - 15.0) / 25.0) * 15
         vol_s = 5 + clamp01((vol_z - 2.0) / 3.0) * 15
         taker_s = clamp01((taker_dir - 0.5) / 0.2) * 10
@@ -96,7 +105,7 @@ class TrendBreakout:
         regime_s = 5 if (reg == "BULL" and side == "LONG") or (reg == "BEAR" and side == "SHORT") else 0
         fund_pen = clamp01(sgn * fr / 0.0005) * 10
         ext_pen = clamp01(ext - 2.0) * 10
-        score = 45 + trend_s + vol_s + taker_s + squeeze_s + rs_s + regime_s - fund_pen - ext_pen
+        score = 42 + trend_s + vol_s + taker_s + squeeze_s + rs_s + regime_s + mtf_s - fund_pen - ext_pen
 
         word_level = "zirvesinin üstünde" if side == "LONG" else "dibinin altında"
         reasons = [
@@ -105,6 +114,7 @@ class TrendBreakout:
             f"1 saatlik trend uyumlu: EMA50 {'>' if side == 'LONG' else '<'} EMA200 (ADX {adx1:.0f})",
             f"Agresif {'alım' if side == 'LONG' else 'satım'} oranı %{taker_dir * 100:.0f}",
         ]
+        reasons.append(f"Zaman dilimi uyumu: {aligned}/3 (15 dk · 1 sa · 4 sa)")
         if squeeze:
             reasons.append("Kırılım öncesi volatilite sıkışması")
         if rs_s > 0:
@@ -114,6 +124,8 @@ class TrendBreakout:
             warnings.append("Fiyat kısa vadeli ortalamadan uzaklaşmış (kovalama riski)")
         if fund_pen > 5:
             warnings.append("Funding yüksek: pozisyonlar kalabalık olabilir")
+        if t4 is not None and t4 not in (want, "flat"):
+            warnings.append("4 saatlik trend ters yönde: kırılım daha büyük trende karşı")
 
         ttl = ctx.scanner.signal_ttl_min * 60_000
         return make_signal(
@@ -123,6 +135,7 @@ class TrendBreakout:
             features={
                 "vol_z": vol_z, "adx_1h": adx1, "ext_atr": ext, "taker_ratio": taker_dir, "funding": fr,
                 "squeeze_rank": squeeze_rank, "rs_24h": rs, "atr_pct": at / close * 100.0,
+                "mtf_aligned": float(aligned),
             },
             trailing_atr_mult=3.0, time_stop_bars=24,
         )

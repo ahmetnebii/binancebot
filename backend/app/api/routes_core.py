@@ -6,6 +6,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from ..backtest.metrics import monthly_pnl, r_histogram
 from ..engine.engine import Engine, EngineError
 from ..util import now_ms
 from .deps import ctx_of, require_auth, require_csrf
@@ -243,6 +244,17 @@ async def market_symbols(request: Request) -> list[dict]:
     return out[:800]
 
 
+@router.get("/market/analysis")
+async def market_analysis(request: Request, symbol: str) -> dict:
+    eng = engine_of(request)
+    symbol = symbol.upper()
+    if symbol not in eng.market.symbols:
+        raise HTTPException(404, "Sembol bulunamadı")
+    from ..engine.analysis import symbol_analysis
+
+    return await symbol_analysis(eng.market, symbol, eng.regime, ctx_of(request).store.scanner.max_spread_bps)
+
+
 @router.get("/market/klines")
 async def market_klines(
     request: Request, symbol: str, interval: str = "15m", limit: int = Query(300, ge=10, le=1000)
@@ -314,6 +326,8 @@ async def history_stats(request: Request) -> dict:
         "best_r": max(rs) if rs else None,
         "worst_r": min(rs) if rs else None,
         "by_strategy": by_strategy,
+        "r_histogram": r_histogram(rs),
+        "monthly": monthly_pnl([(p.closed_at, p.realized_pnl - p.fees + p.funding) for p in closed if p.closed_at]),
     }
 
 

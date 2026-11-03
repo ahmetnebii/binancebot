@@ -173,6 +173,7 @@ class _StreamConn:
 
 class BinanceMarketData(MarketData):
     source = "binance"
+    supports_liquidations = True
 
     def __init__(
         self,
@@ -310,7 +311,7 @@ class BinanceMarketData(MarketData):
                 delay = min(delay * 2, 120)
         if self._stopping:
             return
-        streams = ["!miniTicker@arr", "!markPrice@arr@1s"]
+        streams = ["!miniTicker@arr", "!markPrice@arr@1s", "!forceOrder@arr"]
         for s in self.universe:
             for tf in self.base_tfs:
                 streams.append(f"{s.lower()}@kline_{tf}")
@@ -410,6 +411,12 @@ class BinanceMarketData(MarketData):
                     next_funding_time=int(p.get("T", 0) or 0),
                     ts=int(p.get("E", now_ms())),
                 )
+            elif e == "forceOrder":
+                o = p["o"]
+                qty = float(o.get("z") or o.get("q") or 0.0)
+                price = float(o.get("ap") or o.get("p") or 0.0)
+                if qty > 0 and price > 0:
+                    self.record_liquidation(o["s"], str(o.get("S", "")), qty * price, int(o.get("T", p.get("E", now_ms()))))
             elif e == "kline":
                 k = p["k"]
                 symbol = p.get("s", k.get("s"))

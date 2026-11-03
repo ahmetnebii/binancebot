@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **Sürüm** | 1.1 |
+| **Sürüm** | 1.2 |
 | **Tarih** | 3 Kasım 2026 |
-| **Durum** | v0.1 uygulandı: tarama, stratejiler, risk motoru, simülasyon/testnet/canlı broker, kontrol paneli (bkz. Bölüm 26) |
+| **Durum** | v0.2 uygulandı: tarama, stratejiler, risk motoru, broker'lar, kontrol paneli, backtest + kalibrasyon, çok zaman dilimli analiz (bkz. Bölüm 26) |
 | **Kapsam** | Binance USDⓈ-M Perpetual (USDT marjinli) vadeli işlemler |
 
 > **Özet**
@@ -1308,11 +1308,48 @@ Başlangıç sermayesi sabit değildir; sistem her işlemde **güncel özsermaye
 | Binance broker (Algo API stop, reduce-only TP, kullanıcı akışı, mutabakat) | ✅ yazıldı, **testnet'te doğrulanacak** |
 | Pozisyon yönetimi (TP merdiveni, başa-baş, iz süren stop, zaman stopu) | ✅ |
 | Kontrol paneli, şifreli ayarlar, Telegram bildirim ve komutları | ✅ |
-| Backtest motoru, walk-forward, Monte Carlo (Faz 4) | ⏳ sıradaki |
-| S3/S4/S6 stratejileri, ML meta-etiketleme (Faz 10) | ⏳ |
+| **Backtest motoru** (aynı strateji/risk kodu), Monte Carlo, dönemsel tutarlılık, **kalibrasyon** | ✅ v0.2 |
+| **Çok zaman dilimli analiz paneli** (15 dk / 1 sa / 4 sa, funding, OI, likidasyon, spread, BTC korelasyonu) | ✅ v0.2 |
+| Sinyal kalitesi: 4 saatlik trend uyumu, OI teyidi, log-hacim z-skoru, işlem öncesi spread kontrolü | ✅ v0.2 |
+| S3 Ortalamaya Dönüş (yatay piyasa) | ✅ v0.2 (varsayılan kapalı) |
+| Strateji sağlık monitörü, Telegram günlük rapor, geçmiş analitiği (R dağılımı, aylık K/Z) | ✅ v0.2 |
+| S4 likidasyon dönüşü, S6 funding hasadı, ML meta-etiketleme (Faz 10) | ⏳ |
 
 > [!IMPORTANT]
-> Strateji parametreleri henüz backtest ile doğrulanmadı. Beklenti (EV) tahminleri şimdilik varsayılan istatistiklerle başlar ve kapanan işlemler biriktikçe gerçek sonuçlarla güncellenir. Bu yüzden canlıya geçmeden önce **Simülasyon → Testnet** aşamalarını tamamla.
+> Canlıya geçmeden önce kendi sunucunda **gerçek Binance verisiyle Backtest** çalıştır (en az 90–180 gün, 25+ sembol). Sonuç tatmin ediciyse kalibrasyonu uygula, sonra **Simülasyon → Testnet** aşamalarını tamamla. Geliştirme ortamındaki testler sentetik veriyle yapıldı; o sonuçlar gerçek performans hakkında bilgi vermez.
+
+### 26.5 Backtest ve kalibrasyon nasıl kullanılır?
+
+1. **Backtest** sayfasında süre (ör. 180 gün), sembol sayısı (ör. 30) ve stratejileri seç. Mevcut risk ve strateji ayarların kullanılır.
+2. İlk çalıştırmada veri Binance'ten indirilir ve `data/history` altında önbelleğe alınır; sonraki testler hızlı olur. İndirme, canlı sistemi etkilememek için düşük bir hız bütçesiyle yapılır.
+3. Sonuçları **Go/No-Go kapılarıyla** (Bölüm 15.6) karşılaştır:
+
+   | Bakılacak | Neden |
+   |---|---|
+   | Profit factor ≥ 1,3 ve beklenti ≥ +0,10R | Maliyetler sonrası gerçek avantaj var mı? |
+   | Maksimum düşüş ve Monte Carlo %95 düşüşü | Kötü senaryoda kasa ne kadar erir? |
+   | Dönemsel tutarlılık (walk-forward) | Kâr tek bir dönemden mi geliyor, yoksa dönemlere yayılmış mı? |
+   | Strateji ve yön kırılımı | Hangi strateji para kazandırıyor, hangisi kaybettiriyor? |
+   | İşlem sayısı (≥ 100–300) | Az işlemle alınan sonuç tesadüf olabilir |
+
+4. Tatmin ediciyse **Kalibrasyonu uygula**. Fırsatların kazanma olasılığı ve beklenti tahmini artık ölçülmüş istatistiklerle hesaplanır; canlı sonuçlar geldikçe bunlarla harmanlanır.
+5. Kötü performans gösteren stratejiyi kapat veya parametrelerini değiştirip tekrar test et. Çok sayıda deneme yapıp en iyisini seçmenin aşırı uyum (overfitting) riski taşıdığını unutma.
+
+**Bilinen sınırlamalar** (sonuç ekranında da uyarı olarak gösterilir):
+- Sembol evreni bugünkü hacim sıralamasından seçilir; sonradan delist edilen coinler dahil değildir (hayatta kalma yanılgısı).
+- Mum içi sıra bilinmediği için aynı mumda hem stop hem hedef görülürse önce stop varsayılır (kötümser).
+- Open interest ve likidasyon geçmişi ücretsiz API'de sınırlı olduğu için backtest bu teyitleri kullanmaz; canlı fırsatlarda kullanılır.
+
+### 26.6 Analiz paneli
+
+Fırsat, pozisyon ve manuel işlem ekranlarında bulunur:
+- **Zaman dilimi tablosu (15 dk / 1 sa / 4 sa):** trend (EMA dizilimi), RSI, ADX, ATR %, Bollinger %B, EMA20'ye uzaklık (ATR cinsinden), hacim z-skoru.
+- **Uyum özeti:** Kaç zaman diliminin aynı yönde olduğu, ör. "3/3 zaman dilimi yükselişte".
+- **Türev verisi:** funding oranı ve bir sonraki funding zamanı, son 1 saatte OI değişimi, son 1 saatin long/short likidasyonları.
+- **Piyasa ve likidite:** BTC'ye korelasyon ve beta, BTC'ye göre göreli güç, spread (bps).
+- **Türkçe notlar:** aşırı alım/satım, kalabalık pozisyon, yüksek oynaklık, likidite uyarıları.
+
+**Strateji sağlık monitörü:** Bir stratejinin son N işleminin (varsayılan 20) ortalaması eşiğin (varsayılan −0,15R) altına düşerse strateji otomatik kapatılır; Telegram ve panelden bildirim gelir.
 
 ---
 

@@ -63,6 +63,13 @@ SCHEMA = [
         created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL
     )""",
+    """CREATE TABLE IF NOT EXISTS backtests (
+        id TEXT PRIMARY KEY,
+        created_at INTEGER NOT NULL,
+        job TEXT NOT NULL,
+        result TEXT
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_backtests_created ON backtests(created_at)",
 ]
 
 
@@ -228,6 +235,41 @@ class Database:
 
     async def clear_equity(self, env: str) -> None:
         await self.c.execute("DELETE FROM equity WHERE env=?", (env,))
+        await self.c.commit()
+
+    # --- backtest işleri -----------------------------------------------
+    async def bt_save(self, job: dict, result: Optional[dict] = None) -> None:
+        if result is None:
+            await self.c.execute(
+                "INSERT INTO backtests(id, created_at, job) VALUES(?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET job=excluded.job",
+                (job["id"], job["created_at"], json.dumps(job)),
+            )
+        else:
+            await self.c.execute(
+                "INSERT INTO backtests(id, created_at, job, result) VALUES(?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET job=excluded.job, result=excluded.result",
+                (job["id"], job["created_at"], json.dumps(job), json.dumps(result)),
+            )
+        await self.c.commit()
+
+    async def bt_get(self, job_id: str, with_result: bool = True) -> Optional[dict]:
+        async with self.c.execute("SELECT job, result FROM backtests WHERE id=?", (job_id,)) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return None
+        job = json.loads(row[0])
+        if with_result and row[1]:
+            job["result"] = json.loads(row[1])
+        return job
+
+    async def bt_list(self, limit: int = 20) -> list[dict]:
+        async with self.c.execute("SELECT job FROM backtests ORDER BY created_at DESC LIMIT ?", (limit,)) as cur:
+            rows = await cur.fetchall()
+        return [json.loads(r[0]) for r in rows]
+
+    async def bt_delete(self, job_id: str) -> None:
+        await self.c.execute("DELETE FROM backtests WHERE id=?", (job_id,))
         await self.c.commit()
 
     # --- oturumlar -----------------------------------------------------

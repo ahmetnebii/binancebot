@@ -24,6 +24,7 @@ from ..risk.manager import Breaker, RiskManager, loss_streak, open_risk_usdt
 from ..risk.sizing import approx_liq_price, symbol_class
 from ..settings import SettingsStore
 from ..strategies.base import StrategyContext
+from ..strategies.mean_reversion import MeanReversion
 from ..strategies.rs_rotation import RSRotation
 from ..strategies.scorer import estimate
 from ..strategies.trend_breakout import TrendBreakout
@@ -89,6 +90,9 @@ class Engine:
         self.regime_detector = RegimeDetector()
         self.s1 = TrendBreakout()
         self.s2 = RSRotation()
+        self.s3 = MeanReversion()
+        self.calibration: dict = {}
+        self._last_report_day: Optional[int] = None
         self.scanner: dict = {"last_scan_at": None, "next_scan_at": None, "scanned_symbols": 0}
         self._tasks: list[asyncio.Task] = []
         self._exec_lock = asyncio.Lock()
@@ -119,6 +123,13 @@ class Engine:
     async def start(self) -> None:
         await self.risk.load(self.env)
         await self._load_state()
+        cal = await self.db.kv_get("calibration")
+        self.calibration = (cal or {}).get("strategies", {}) if isinstance(cal, dict) else {}
+        self._last_report_day = await self.db.kv_get("daily_report_day")
+        if self._last_report_day is None:  # ilk kurulumda boş rapor gönderme
+            today = now_ms() - (now_ms() % 86_400_000)
+            self._last_report_day = today
+            await self.db.kv_set("daily_report_day", today, now_ms())
         await self.market.start()
         await self._init_broker()
         self._tasks = [
@@ -288,17 +299,19 @@ class Engine:
         t0 = time.perf_counter()
         if tf == "1h" and self.store.strategies.s2_enabled:
             found += self.s2.evaluate_universe(universe, ctx)
-        if tf == "15m" and self.store.strategies.s1_enabled:
-            for sym in universe:
+        if tf == "15m":
+            per_bar = [s for s, on in ((self.s1, self.store.strategies.s1_enabled), (self.s3, self.store.strategies.s3_enabled)) if on]
+            for sym in universe if per_bar else []:
                 if sym in self.store.scanner.blacklist:
                     continue
-                try:
-                    sig = self.s1.evaluate(sym, ctx)
-                except Exception:
-                    log.exception("S1 değerlendirme hatası (%s)", sym)
-                    continue
-                if sig:
-                    found.append(sig)
+                for strat in per_bar:
+                    try:
+                        sig = strat.evaluate(sym, ctx)
+                    except Exception:
+                        log.exception("%s değerlendirme hatası (%s)", strat.code, sym)
+                        continue
+                    if sig:
+                        found.append(sig)
                 await asyncio.sleep(0)
         now = now_ms()
         self.scanner = {
@@ -319,14 +332,18 @@ class Engine:
         for p in self.recent_closed:
             if p.r_final is None:
                 continue
-            d = out.setdefault(p.strategy, {"n": 0, "wins": 0, "win_r": 0.0})
+            d = out.setdefault(p.strategy, {"n": 0, "wins": 0, "win_r": 0.0, "loss_r": 0.0})
             d["n"] += 1
             if p.r_final > 0:
                 d["wins"] += 1
                 d["win_r"] += p.r_final
+            else:
+                d["loss_r"] += -p.r_final
         for d in out.values():
             d["win_rate"] = d["wins"] / d["n"] if d["n"] else 0.0
             d["avg_win_r"] = d["win_r"] / d["wins"] if d["wins"] else None
+            losses = d["n"] - d["wins"]
+            d["avg_loss_r"] = d["loss_r"] / losses if losses else None
         self._stats_cache = (now_ms(), out)
         return out
 
@@ -347,10 +364,15 @@ class Engine:
         for s in self.signals.values():
             if s.status == "ACTIVE" and s.symbol == sig.symbol and s.strategy == sig.strategy:
                 return
+        await self._enrich_with_oi(sig)
         _, taker = await self._fees(sig.symbol)
         mi = self.market.funding(sig.symbol)
         stats = self._strategy_stats().get(sig.strategy)
-        sig.win_prob, sig.ev_r = estimate(sig, taker, self._slippage(), mi.funding_rate if mi else 0.0, stats)
+        sig.win_prob, sig.ev_r = estimate(
+            sig, taker, self._slippage(), mi.funding_rate if mi else 0.0, stats, self.calibration
+        )
+        if sig.strategy in self.calibration:
+            sig.features["calibrated"] = 1.0
         if sig.ev_r < self.store.risk.min_ev_r:
             sig.warnings.append("Tahmini beklenti eşiğin altında: otomatik mod bu fırsatı işlemez")
         sig.price = self.market.price(sig.symbol)
@@ -385,6 +407,92 @@ class Engine:
                 f"Onay için panele girin (otomatik mod kapalı).",
                 kind="signal",
             )
+
+    async def _enrich_with_oi(self, sig: Signal) -> None:
+        """Open interest teyidi: kırılım/momentumda artan OI yeni pozisyon girişini gösterir.
+
+        Ortalamaya dönüşte (S3) yorum tersine döner: azalan OI (pozisyon kapanışı/likidasyon)
+        dönüşü destekler, artan OI ise trendin devam edebileceğine işaret eder.
+        """
+        if not self.store.strategies.oi_confirmation:
+            return
+        try:
+            oi = await self.market.oi_change_pct(sig.symbol, 60)
+        except Exception:
+            oi = None
+        if oi is None:
+            return
+        sig.features["oi_change_1h"] = round(oi, 3)
+        supportive = oi >= 1.0 if sig.strategy != "S3" else oi <= -1.0
+        against = oi <= -1.0 if sig.strategy != "S3" else oi >= 1.0
+        if supportive:
+            sig.score = round(min(100.0, sig.score + 5.0), 1)
+            what = "yeni pozisyon girişi hareketi destekliyor" if sig.strategy != "S3" else "pozisyonlar kapanıyor, dönüş ihtimali artıyor"
+            sig.reasons.append(f"Open interest son 1 saatte %{oi:+.1f}: {what}")
+        elif against:
+            sig.score = round(max(0.0, sig.score - 5.0), 1)
+            what = "hareket pozisyon kapanışından kaynaklanıyor olabilir" if sig.strategy != "S3" else "yeni pozisyonlar trendi sürdürebilir"
+            sig.warnings.append(f"Open interest %{oi:+.1f}: {what}")
+
+    def set_calibration(self, strategies: dict) -> None:
+        self.calibration = dict(strategies or {})
+        self._stats_cache = (0, {})
+
+    async def _check_strategy_health(self, strategy: str) -> None:
+        """Son N işlemin beklentisi eşiğin altına düşen stratejiyi otomatik kapatır."""
+        cfg = self.store.strategies
+        key = {"S1": "s1_enabled", "S2": "s2_enabled", "S3": "s3_enabled"}.get(strategy)
+        if not cfg.health_monitor or key is None or not getattr(cfg, key):
+            return
+        closed = [
+            p for p in await self.db.list_positions(self.env, "CLOSED", 1000)
+            if p.strategy == strategy and p.r_final is not None and p.close_reason != "Simülasyon sıfırlandı"
+        ][: cfg.health_min_trades]
+        if len(closed) < cfg.health_min_trades:
+            return
+        exp_r = sum(p.r_final or 0.0 for p in closed) / len(closed)
+        if exp_r >= cfg.health_min_expectancy_r:
+            return
+        await self.store.update("strategies", {key: False})
+        name = closed[0].strategy_name
+        msg = (
+            f"{name} ({strategy}) otomatik olarak kapatıldı: son {len(closed)} işlemin beklentisi "
+            f"{exp_r:+.2f}R (eşik {cfg.health_min_expectancy_r:+.2f}R). Backtest ile yeniden değerlendirin."
+        )
+        await self.events.log("warning", "health", msg, toast=True, title="Strateji sağlık monitörü")
+        self.notifier.notify(f"🩺 <b>Strateji kapatıldı</b>\n{esc(msg)}", kind="system")
+
+    async def _maybe_daily_report(self) -> None:
+        """UTC 00:05'ten sonra bir önceki günün özetini Telegram'a gönderir (günde bir kez)."""
+        if not self.store.telegram.daily_report:
+            return
+        now = now_ms()
+        day = now - (now % 86_400_000)
+        if now - day < 5 * 60_000 or self._last_report_day == day:
+            return
+        self._last_report_day = day
+        await self.db.kv_set("daily_report_day", day, now)
+        prev = day - 86_400_000
+        closed = [
+            p for p in await self.db.list_positions(self.env, "CLOSED", 500)
+            if p.closed_at and prev <= p.closed_at < day and p.close_reason != "Simülasyon sıfırlandı"
+        ]
+        nets = [p.realized_pnl - p.fees + p.funding for p in closed]
+        wins = sum(1 for x in nets if x > 0)
+        eq_rows = await self.db.list_equity(self.env, prev)
+        eq_rows = [r for r in eq_rows if r[0] < day]
+        start_eq = eq_rows[0][1] if eq_rows else None
+        end_eq = eq_rows[-1][1] if eq_rows else (self.account.equity if self.account else None)
+        lines = [f"📊 <b>Günlük rapor</b> · {self.env}"]
+        if start_eq and end_eq:
+            lines.append(f"Özsermaye: {end_eq:.2f} USDT ({(end_eq / start_eq - 1) * 100:+.2f}%)")
+        lines.append(f"Kapanan işlem: {len(closed)} · kazanan {wins} · K/Z {sum(nets):+.2f} USDT")
+        if closed:
+            rs = [p.r_final for p in closed if p.r_final is not None]
+            if rs:
+                lines.append(f"Ortalama R: {sum(rs) / len(rs):+.2f} · en iyi {max(rs):+.2f}R · en kötü {min(rs):+.2f}R")
+        lines.append(f"Açık pozisyon: {len(self.positions)} · otomatik mod: {'AÇIK' if self.store.runtime.auto_mode else 'kapalı'}")
+        self.notifier.notify("\n".join(lines), kind="system")
 
     def _blocking_breakers(self) -> list[Breaker]:
         return [b for b in self._breakers if b.active and b.blocks_auto]
@@ -616,6 +724,16 @@ class Engine:
         plan = await self._plan(symbol, side, price, stop, score, plan_source or source, risk_pct, leverage)
         if not plan.ok:
             raise EngineError(plan.reason)
+        book = await self.market.book(symbol)
+        if book:
+            bid, ask = book
+            mid = (bid + ask) / 2.0
+            spread_bps = (ask - bid) / mid * 10_000 if mid > 0 else 0.0
+            limit_bps = self.store.scanner.max_spread_bps
+            if spread_bps > limit_bps:
+                raise EngineError(
+                    f"Spread çok yüksek ({spread_bps:.1f} bps, sınır {limit_bps:.1f} bps): kayma riski nedeniyle işlem açılmadı"
+                )
         info = self.market.symbols[symbol]
         sgn = side_sign(side)
         qty = D(plan.qty)
@@ -799,6 +917,10 @@ class Engine:
             f"{esc(reason)} · K/Z {net:+.2f} USDT ({r_txt})",
             kind="trade",
         )
+        try:
+            await self._check_strategy_health(pos.strategy)
+        except Exception:
+            log.exception("Strateji sağlık kontrolü hatası")
 
     async def close_position(self, pos_id: str, fraction: float = 1.0, reason: str = "Manuel kapanış") -> Position:
         async with self._exec_lock:
@@ -1040,6 +1162,8 @@ class Engine:
                 n += 1
                 if n % 3 == 0:
                     await self._refresh_signal_plans()
+                if n % 6 == 0:
+                    await self._maybe_daily_report()
                 if n % 360 == 0:
                     await self.db.prune_events()
                 if not self._breakers:

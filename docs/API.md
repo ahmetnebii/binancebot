@@ -289,8 +289,134 @@ interface ManualOrder {
 | GET | `/api/market/symbols` | `{symbol, price, change_pct, quote_volume, funding_rate, in_universe}[]` |
 | GET | `/api/market/klines?symbol=BTCUSDT&interval=15m&limit=300` | `Candle[]` (aralık: `1m`, `5m`, `15m`, `1h`, `4h`) |
 | GET | `/api/history/equity?range=1d\|7d\|30d\|all` | `{time: number /*sn*/, equity: number}[]` |
-| GET | `/api/history/stats` | `{trades, wins, losses, win_rate, expectancy_r, profit_factor, total_pnl, avg_win_r, avg_loss_r, best_r, worst_r, by_strategy: {strategy, strategy_name, trades, win_rate, total_pnl, expectancy_r}[]}` |
+| GET | `/api/history/stats` | `{trades, wins, losses, win_rate, expectancy_r, profit_factor, total_pnl, avg_win_r, avg_loss_r, best_r, worst_r, by_strategy: {strategy, strategy_name, trades, win_rate, total_pnl, expectancy_r}[], r_histogram: RBin[], monthly: {month: "2026-11", pnl: number, trades: number}[]}` |
 | GET | `/api/events?limit=200` | `EventItem[]` |
+| GET | `/api/market/analysis?symbol=BTCUSDT` | `SymbolAnalysis` (aşağıda) |
+
+```ts
+interface RBin { from: number; to: number; count: number }   // R aralığı [from, to)
+
+interface TfAnalysis {
+  tf: "15m" | "1h" | "4h";
+  trend: "up" | "down" | "flat";        // EMA20/50/200 dizilimi + fiyatın konumu
+  ema_stack: string;                     // ör. "Fiyat > EMA20 > EMA50 > EMA200"
+  rsi: number | null;                    // 0-100
+  adx: number | null;
+  atr_pct: number | null;                // yüzde (ATR / fiyat × 100)
+  bb_pctb: number | null;                // Bollinger %B (0 = alt bant, 1 = üst bant)
+  dist_ema20_atr: number | null;         // (fiyat − EMA20) / ATR
+  vol_z: number | null;                  // log-hacim z-skoru (son bar)
+  change_pct: number | null;             // son 24 barlık değişim, yüzde
+}
+
+interface SymbolAnalysis {
+  symbol: string;
+  price: number | null;
+  updated_at: number;
+  timeframes: TfAnalysis[];              // 15m, 1h, 4h sırasıyla (veri yoksa eksik olabilir)
+  confluence: { long: number; short: number; label: string };   // 0-3: kaç zaman dilimi aynı yönde
+  derivatives: {
+    funding_rate: number | null;         // kesir (0.0001 = %0,01 / 8 saat)
+    next_funding_time: number | null;    // ms
+    oi_change_1h_pct: number | null;     // yüzde
+    liq_long_1h: number | null;          // son 1 saatte likide edilen long'lar (USDT)
+    liq_short_1h: number | null;
+  };
+  market: {
+    change_24h_pct: number | null;       // yüzde
+    quote_volume_24h: number | null;
+    volume_rank: number | null;
+    btc_corr: number | null;             // 1 saatlik getirilerle, -1..1
+    btc_beta: number | null;
+    rs_24h_pct: number | null;           // BTC'ye göre 24s göreli getiri, yüzde
+  };
+  liquidity: { bid: number | null; ask: number | null; spread_bps: number | null };
+  regime: Regime;
+  notes: string[];                       // Türkçe özet cümleler
+}
+```
+
+### Geriye dönük test (backtest)
+
+Aynı strateji, rejim ve risk kodu geçmiş veride çalıştırılır. Veri Binance REST'ten çekilip `data/history` altında önbelleğe alınır (sentetik modda sentetik geçmiş üretilir). Aynı anda tek iş çalışır; ilerleme WS `backtest` mesajıyla da yayınlanır.
+
+| Metot | Yol | Gövde | Yanıt |
+|---|---|---|---|
+| POST | `/api/backtest/run` | `BacktestConfigIn` | `BacktestJob` |
+| GET | `/api/backtest/jobs` | | `BacktestJob[]` (son 20, `result` olmadan) |
+| GET | `/api/backtest/jobs/{id}` | | `BacktestJob` (`result` ile) |
+| POST | `/api/backtest/jobs/{id}/cancel` | | `BacktestJob` |
+| DELETE | `/api/backtest/jobs/{id}` | | `{ok: true}` |
+| POST | `/api/backtest/jobs/{id}/apply-calibration` | | `Calibration` |
+| GET | `/api/backtest/calibration` | | `Calibration` |
+| DELETE | `/api/backtest/calibration` | | `Calibration` (varsayılana döner) |
+
+```ts
+interface BacktestConfigIn {
+  days?: number;                 // 7-365, varsayılan 90
+  top_n?: number;                // 5-80, varsayılan 25 (hacme göre en büyükler; BTCUSDT her zaman dahil)
+  symbols?: string[];            // verilirse top_n yerine bunlar
+  strategies?: { s1?: boolean; s2?: boolean; s3?: boolean };   // varsayılan: mevcut ayarlar
+  initial_equity?: number;       // varsayılan 1000
+  slippage_bps?: number;         // varsayılan simülasyon ayarı
+  taker_fee?: number; maker_fee?: number;
+}
+
+interface BacktestSummary {
+  trades: number; win_rate: number | null;          // kesir
+  profit_factor: number | null; expectancy_r: number | null;
+  total_return_pct: number; max_drawdown_pct: number;   // yüzde
+  sharpe: number | null;
+  period_start: number; period_end: number;          // ms
+  symbols: number;
+}
+
+interface BacktestJob {
+  id: string;
+  created_at: number; finished_at: number | null;
+  status: "queued" | "running" | "done" | "failed" | "cancelled";
+  progress: { phase: "data" | "simulate" | "analyze" | "done"; pct: number; message: string };
+  config: Required<Omit<BacktestConfigIn, "symbols">> & { symbols: string[] };
+  error: string | null;
+  summary: BacktestSummary | null;
+  result?: BacktestResult;
+}
+
+interface BacktestResult {
+  summary: BacktestSummary & {
+    cagr_pct: number | null; sortino: number | null; calmar: number | null;
+    avg_win_r: number | null; avg_loss_r: number | null; best_r: number | null; worst_r: number | null;
+    avg_hold_hours: number | null; exposure_pct: number; trades_per_day: number;
+    fees_total: number; funding_total: number; initial_equity: number; final_equity: number;
+  };
+  by_strategy: { strategy: string; strategy_name: string; trades: number; win_rate: number | null;
+                 profit_factor: number | null; expectancy_r: number | null; total_pnl: number;
+                 avg_win_r: number | null; avg_loss_r: number | null }[];
+  by_side: { side: Side; trades: number; win_rate: number | null; expectancy_r: number | null; total_pnl: number }[];
+  equity: { time: number /*sn*/; equity: number; drawdown_pct: number }[];
+  monthly: { month: string; return_pct: number }[];
+  r_histogram: RBin[];
+  monte_carlo: { runs: number; dd_p50: number; dd_p95: number; dd_p99: number;     // yüzde
+                 final_p5: number; final_p50: number; final_p95: number;           // özsermaye (USDT)
+                 prob_dd_20: number; prob_dd_30: number } | null;                    // kesir
+  walk_forward: { fold: number; start: number; end: number; trades: number;
+                  expectancy_r: number | null; profit_factor: number | null; return_pct: number }[];
+  trades: { symbol: string; side: Side; strategy: string; entry_time: number; exit_time: number;
+            entry_price: number; exit_price: number; r: number; pnl: number; fees: number;
+            reason: string; hold_bars: number }[];            // en fazla 2000
+  calibration: Record<string, { n: number; win_rate: number; avg_win_r: number; avg_loss_r: number; expectancy_r: number }>;
+  data_source: "binance" | "synthetic";
+  warnings: string[];
+}
+
+interface Calibration {
+  source_job: string | null;
+  applied_at: number | null;
+  strategies: Record<string, { n: number; win_rate: number; avg_win_r: number; avg_loss_r: number; expectancy_r: number }>;
+}
+```
+
+Kalibrasyon uygulandığında fırsatların kazanma olasılığı ve beklenti (EV) tahmini, varsayılan değerler yerine bu ölçülmüş istatistiklerle (canlı sonuçlarla harmanlanarak) hesaplanır.
 
 ### Ayarlar
 
@@ -323,7 +449,7 @@ interface SettingsView {
   };
   telegram: {
     enabled: boolean; chat_id: string; bot_token_set: boolean; bot_token_hint: string;
-    notify_signals: boolean; notify_trades: boolean;
+    notify_signals: boolean; notify_trades: boolean; daily_report: boolean;
   };
   risk: RiskSettings;
   scanner: ScannerSettings;
@@ -351,10 +477,18 @@ interface ScannerSettings {
 }
 
 interface StrategySettings {
-  s1_enabled: boolean; s2_enabled: boolean;
+  s1_enabled: boolean; s2_enabled: boolean; s3_enabled: boolean;   // S3 varsayılan kapalı
   s1_donchian: number; s1_vol_z: number; s1_atr_mult: number; s2_top_n: number;
+  s3_bb_k: number;            // Bollinger genişliği (2.0-3.5)
+  s3_rsi: number;             // aşırılık eşiği (15-35); long için RSI < eşik, short için > 100 − eşik
+  oi_confirmation: boolean;   // fırsat puanına open interest teyidi
+  health_monitor: boolean;    // performansı bozulan stratejiyi otomatik kapat
+  health_min_trades: number;  // değerlendirme için en az işlem (10-100)
+  health_min_expectancy_r: number;   // bu beklentinin altına düşerse kapat (ör. -0.15)
 }
 ```
+
+`PUT /api/settings/telegram` gövdesi `daily_report?: boolean` da kabul eder (UTC 00:05'te günlük özet).
 
 ## WebSocket `/ws`
 
@@ -371,6 +505,7 @@ interface StrategySettings {
 | `event` | `EventItem` | olay oldukça |
 | `kline` | `{symbol, interval, candle: Candle}` | abone olunan grafik için |
 | `toast` | `{level, title, message}` | önemli bildirimler |
+| `backtest` | `BacktestJob` (`result` olmadan) | backtest ilerledikçe/bitince |
 
 **İstemci → sunucu:**
 

@@ -27,10 +27,19 @@ Binance USDⓈ-M Futures için **risk öncelikli, tam otomatik** işlem sistemi 
 
 - **Tüm USDT perpetual kontratları** gerçek zamanlı tarar. Binance'in 2026 WebSocket yapısını (`/market`, `/public`, `/private`) kullanır.
 - **Fırsat stratejileri:**
-  - S1 Trend Kırılımı (15 dk)
+  - S1 Trend Kırılımı (15 dk): 15 dk / 1 sa / 4 sa trend uyumu, log-hacim teyidi
   - S2 Göreli Güç Rotasyonu (1 saat)
-  - Piyasa rejimi filtresi
-  - Her fırsat için puan ve tahmini beklenti (EV) hesaplar.
+  - S3 Ortalamaya Dönüş (yatay piyasa; varsayılan kapalı, önce backtest)
+  - Piyasa rejimi filtresi ve open interest teyidi
+  - Her fırsat için puan ve tahmini beklenti (EV) hesaplanır. Backtest kalibrasyonu uygulanınca EV ölçülmüş istatistiklere dayanır.
+- **Backtest:**
+  - Aynı strateji ve risk koduyla geçmiş veride test yapılır; komisyon, kayma ve gerçek funding geçmişi hesaba katılır.
+  - Sonuçta Monte Carlo düşüş dağılımı, dönemsel tutarlılık, R dağılımı, aylık getiriler ve strateji/yön kırılımı yer alır.
+  - Tek tıkla kalibrasyon uygulanabilir.
+- **Analiz paneli:** Fırsat, pozisyon ve manuel işlem ekranlarında bulunur.
+  - Zaman dilimi tablosu: trend, RSI, ADX, ATR, Bollinger %B, hacim.
+  - Funding, OI değişimi, likidasyonlar, spread ve BTC korelasyonu/betası.
+  - Türkçe özet notlar.
 - **Kasa yönetimi (sermayeye oranlı):**
   - İşlem riski özsermayenin yüzdesidir.
   - Kaldıracı sistem önerir: büyüklüğü marjin bütçesine sığdıran en düşük değer, likidasyon stop'tan en az 3 kat uzakta.
@@ -42,7 +51,11 @@ Binance USDⓈ-M Futures için **risk öncelikli, tam otomatik** işlem sistemi 
 - **Borsada duran stop** (Algo API, MARK_PRICE), TP merdiveni, başa-baş, iz süren stop, zaman stopu ve otomatik mutabakat.
 - **Ortamlar:** Simülasyon (gerçek veri + sanal emir) · Testnet · Canlı.
 - **Ayarlar arayüzden:** API anahtarları ve Telegram token sunucuda **şifreli** saklanır, tarayıcıya asla geri gönderilmez.
-- **Telegram:** Bildirimler ve komutlar (`/durum`, `/pozisyonlar`, `/otomatik_ac`, `/otomatik_kapat`, `/durdur`, `/devam`).
+- **Telegram:** Bildirimler, günlük rapor ve komutlar (`/durum`, `/pozisyonlar`, `/otomatik_ac`, `/otomatik_kapat`, `/durdur`, `/devam`).
+- **Koruma katmanları:**
+  - İşlem öncesi spread kontrolü.
+  - Strateji sağlık monitörü: performansı bozulan stratejiyi otomatik kapatır.
+  - Devre kesiciler: günlük/haftalık zarar, maksimum düşüş, kayıp serisi.
 - **Ücretli API yok:** Yalnızca Binance'in ücretsiz API'leri ve açık kaynak yazılım kullanılır.
 
 ## Hızlı başlangıç (Docker — önerilen)
@@ -127,8 +140,8 @@ cd backend && BB_DATA_SOURCE=synthetic ../.venv/bin/python -m app
 - Paneli internete açacaksan HTTPS (ör. Caddy) ve güçlü bir parola kullan; `BB_COOKIE_SECURE=1` ayarla.
 - Kaydedilen API anahtarı ve token arayüze bir daha gösterilmez, sadece son 4 karakteri görünür.
 
-## Durum ve bilinen sınırlamalar (v0.1)
+## Durum ve bilinen sınırlamalar (v0.2)
 
-- Binance bağlantı katmanı resmi API formatlarına göre yazıldı ve birim testleriyle doğrulandı. Ancak gerçek Binance'e karşı ilk uçtan uca test **senin sunucunda** yapılacak, çünkü geliştirme ortamının Binance'e erişimi yoktu. Sıra: Simülasyon → Testnet → küçük Canlı.
+- Binance bağlantı katmanı resmi API formatlarına göre yazıldı ve birim testleriyle doğrulandı. Ancak gerçek Binance'e karşı ilk uçtan uca test **senin sunucunda** yapılacak, çünkü geliştirme ortamının Binance'e erişimi yoktu. Sıra: **Backtest (gerçek veri) → Simülasyon → Testnet → küçük Canlı**.
 - Testnet/demo adresleri ve WebSocket yolları **Ayarlar → Bağlantı → Gelişmiş** bölümünden değiştirilebilir.
-- Strateji parametreleri henüz backtest ile doğrulanmadı (kılavuzda Faz 4). Beklenti tahminleri varsayılan istatistiklerle başlar ve gerçek sonuçlarla güncellenir.
+- Geliştirme ortamındaki backtest'ler sentetik veriyle yapıldı ve gerçek performans hakkında bilgi vermez. Stratejilerin gerçek avantajını kendi sunucunda gerçek Binance verisiyle backtest çalıştırarak ölç ([kılavuz Bölüm 26.5](YAPIM_KILAVUZU.md)).

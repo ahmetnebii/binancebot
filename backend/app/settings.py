@@ -70,6 +70,7 @@ class TelegramSettings(BaseModel):
     chat_id: str = ""
     notify_signals: bool = True
     notify_trades: bool = True
+    daily_report: bool = True
 
     @field_validator("chat_id")
     @classmethod
@@ -136,10 +137,17 @@ class ScannerSettings(BaseModel):
 class StrategySettings(BaseModel):
     s1_enabled: bool = True
     s2_enabled: bool = True
+    s3_enabled: bool = False  # yatay piyasa stratejisi: backtest ile doğrulanmadan açılmaz
     s1_donchian: int = Field(48, ge=10, le=200)
     s1_vol_z: float = Field(2.0, ge=0.5, le=6.0)
     s1_atr_mult: float = Field(2.0, ge=0.5, le=6.0)
     s2_top_n: int = Field(3, ge=1, le=10)
+    s3_bb_k: float = Field(2.5, ge=2.0, le=3.5)
+    s3_rsi: float = Field(25.0, ge=15.0, le=35.0)
+    oi_confirmation: bool = True
+    health_monitor: bool = True
+    health_min_trades: int = Field(20, ge=10, le=100)
+    health_min_expectancy_r: float = Field(-0.15, ge=-1.0, le=0.0)
 
 
 class PaperSettings(BaseModel):

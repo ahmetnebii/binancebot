@@ -4,32 +4,54 @@ from __future__ import annotations
 import numpy as np
 
 
+def _ewm_from(x: np.ndarray, alpha: float, seed: float) -> np.ndarray:
+    """y[0] = seed; i ≥ 1 için y[i] = alpha·x[i] + (1 − alpha)·y[i−1] (x[0] kullanılmaz).
+
+    Vektörel kapalı form: y[k] = r^k·(seed + Σ alpha·x[j]·r^−j), r = 1 − alpha. Taşmayı önlemek
+    için r^−k ≤ e^500 olacak parçalar hâlinde hesaplanır. Python döngüsüne göre onlarca kat hızlıdır;
+    girdiler (fiyat, gerçek aralık, kazanç/kayıp, DX) negatif olmadığından iptal hatası oluşmaz.
+    """
+    m = len(x)
+    out = np.empty(m)
+    if m == 0:
+        return out
+    out[0] = seed
+    if m == 1:
+        return out
+    r = 1.0 - alpha
+    if r <= 0.0:
+        out[1:] = x[1:]
+        return out
+    chunk = max(1, int(500.0 / -np.log(r)))
+    prev = float(seed)
+    i = 1
+    while i < m:
+        j = min(m, i + chunk)
+        rk = r ** np.arange(1, j - i + 1, dtype=float)
+        seg = rk * (prev + np.cumsum(alpha * x[i:j] / rk))
+        out[i:j] = seg
+        prev = float(seg[-1])
+        i = j
+    return out
+
+
 def ema(x: np.ndarray, n: int) -> np.ndarray:
     """Üstel hareketli ortalama; ilk değer basit ortalamayla tohumlanır (TA-Lib ile uyumlu)."""
     x = np.asarray(x, dtype=float)
     out = np.full(x.shape, np.nan)
     if n <= 0 or len(x) < n:
         return out
-    alpha = 2.0 / (n + 1.0)
-    prev = float(x[:n].mean())
-    out[n - 1] = prev
-    for i in range(n, len(x)):
-        prev = alpha * x[i] + (1.0 - alpha) * prev
-        out[i] = prev
+    out[n - 1 :] = _ewm_from(x[n - 1 :], 2.0 / (n + 1.0), float(x[:n].mean()))
     return out
 
 
 def rma(x: np.ndarray, n: int) -> np.ndarray:
-    """Wilder yumuşatması (RSI/ATR/ADX)."""
+    """Wilder yumuşatması (RSI/ATR/ADX): alpha = 1/n, basit ortalamayla tohumlanır."""
     x = np.asarray(x, dtype=float)
     out = np.full(x.shape, np.nan)
     if n <= 0 or len(x) < n:
         return out
-    prev = float(x[:n].mean())
-    out[n - 1] = prev
-    for i in range(n, len(x)):
-        prev = (prev * (n - 1) + x[i]) / n
-        out[i] = prev
+    out[n - 1 :] = _ewm_from(x[n - 1 :], 1.0 / n, float(x[:n].mean()))
     return out
 
 
@@ -92,9 +114,16 @@ def bollinger(c: np.ndarray, n: int = 20, k: float = 2.0) -> tuple[np.ndarray, n
     mid = np.full(c.shape, np.nan)
     sd = np.full(c.shape, np.nan)
     if len(c) >= n:
-        windows = np.lib.stride_tricks.sliding_window_view(c, n)
-        mid[n - 1 :] = windows.mean(axis=1)
-        sd[n - 1 :] = windows.std(axis=1)
+        # Kayan ortalama/std için kümülatif toplamlar (O(n)); ilk değere göre kaydırma
+        # büyük fiyatlarda E[x²] − E[x]² iptal hatasını azaltır.
+        ref = float(c[0])
+        z = c - ref
+        cs = np.concatenate(([0.0], np.cumsum(z)))
+        cs2 = np.concatenate(([0.0], np.cumsum(z * z)))
+        m = (cs[n:] - cs[:-n]) / n
+        var = np.maximum((cs2[n:] - cs2[:-n]) / n - m * m, 0.0)
+        mid[n - 1 :] = m + ref
+        sd[n - 1 :] = np.sqrt(var)
     upper = mid + k * sd
     lower = mid - k * sd
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -124,6 +153,47 @@ def pct_rank_last(x: np.ndarray, n: int) -> float:
     return float((ref < x[-1]).mean())
 
 
+def log_volume_z(v: np.ndarray, n: int) -> float:
+    """Son barın hacminin, önceki n bara göre log-ölçekli z-skoru.
+
+    Hacim log-normal dağıldığı için düz z-skoru tek bir aşırı bardan çok etkilenir;
+    log ölçek daha sağlam bir "olağandışı hacim" ölçüsü verir.
+    """
+    v = np.asarray(v, dtype=float)
+    if len(v) < n + 1:
+        return 0.0
+    return zscore_last(np.log1p(np.maximum(v[-n - 1 :], 0.0)), n)
+
+
+def aggregate_bars(a: dict[str, np.ndarray], step_ms: int, closed_only: bool = True) -> dict[str, np.ndarray]:
+    """Mumları daha büyük zaman dilimine birleştirir (UTC sınırlarına hizalı).
+
+    `closed_only` ise son grup tamamlanmamışsa atılır.
+    """
+    t = a["t"]
+    if len(t) == 0:
+        return {k: v[:0] for k, v in a.items()}
+    keys = t - (t % step_ms)
+    starts = np.flatnonzero(np.r_[True, keys[1:] != keys[:-1]])
+    ends = np.r_[starts[1:], len(t)]
+    out = {
+        "t": keys[starts],
+        "o": a["o"][starts],
+        "h": np.maximum.reduceat(a["h"], starts),
+        "l": np.minimum.reduceat(a["l"], starts),
+        "c": a["c"][ends - 1],
+        "v": np.add.reduceat(a["v"], starts),
+        "qv": np.add.reduceat(a["qv"], starts),
+        "tbq": np.add.reduceat(a["tbq"], starts),
+    }
+    if closed_only and len(starts):
+        base_step = int(t[1] - t[0]) if len(t) > 1 else step_ms
+        last_complete = (t[-1] + base_step) >= keys[-1] + step_ms
+        if not last_complete:
+            out = {k: v[:-1] for k, v in out.items()}
+    return out
+
+
 def log_returns(c: np.ndarray) -> np.ndarray:
     c = np.asarray(c, dtype=float)
     return np.diff(np.log(c))
@@ -144,7 +214,8 @@ def beta(asset: np.ndarray, bench: np.ndarray) -> float:
     if n < 10:
         return 1.0
     a, b = asset[-n:], bench[-n:]
-    var = float(b.var())
+    bm = b - b.mean()
+    var = float(np.dot(bm, bm)) / n
     if var <= 0:
         return 1.0
-    return float(np.cov(a, b, ddof=0)[0, 1] / var)
+    return float(np.dot(a - a.mean(), bm) / n / var)
