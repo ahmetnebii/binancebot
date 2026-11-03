@@ -225,6 +225,17 @@ class BinanceBroker(Broker):
         if info is None:
             raise BrokerError(f"{sym} sembol bilgisi yok")
         self.register(sym, req.position_id, req.side)
+        try:
+            return await self._open_registered(req, info)
+        except BaseException:
+            # Pozisyon hiç açılmadıysa kaydı geri al (borsadaki ilgisiz işlemler bota atfedilmesin)
+            if sym not in self._sl_ids:
+                self._sides.pop(sym, None)
+                self._pos_ids.pop(sym, None)
+            raise
+
+    async def _open_registered(self, req: OpenRequest, info) -> Fill:
+        sym = req.symbol
         await self._prepare(sym, req.leverage)
         side = "BUY" if req.side == "LONG" else "SELL"
         params: dict = {
