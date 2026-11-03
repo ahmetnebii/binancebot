@@ -1,9 +1,11 @@
 import clsx from 'clsx';
 import {
+  AlertTriangle,
   Bell,
   CheckCircle2,
   ChevronDown,
   FlaskConical,
+  HeartPulse,
   KeyRound,
   Lock,
   Plug,
@@ -416,6 +418,7 @@ function TelegramTab({ s, onSaved }: { s: SettingsView; onSaved: (v: SettingsVie
   const [enabled, setEnabled] = useState(t.enabled);
   const [notifySignals, setNotifySignals] = useState(t.notify_signals);
   const [notifyTrades, setNotifyTrades] = useState(t.notify_trades);
+  const [dailyReport, setDailyReport] = useState(t.daily_report ?? true);
   const [chats, setChats] = useState<{ chat_id: string; title: string }[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   useEffect(() => {
@@ -423,12 +426,20 @@ function TelegramTab({ s, onSaved }: { s: SettingsView; onSaved: (v: SettingsVie
     setEnabled(t.enabled);
     setNotifySignals(t.notify_signals);
     setNotifyTrades(t.notify_trades);
-  }, [t.chat_id, t.enabled, t.notify_signals, t.notify_trades]);
+    setDailyReport(t.daily_report ?? true);
+  }, [t.chat_id, t.enabled, t.notify_signals, t.notify_trades, t.daily_report]);
 
   const save = async (extra: Record<string, unknown> = {}) => {
     setBusy('save');
     try {
-      const body: Record<string, unknown> = { enabled, chat_id: chatId.trim(), notify_signals: notifySignals, notify_trades: notifyTrades, ...extra };
+      const body: Record<string, unknown> = {
+        enabled,
+        chat_id: chatId.trim(),
+        notify_signals: notifySignals,
+        notify_trades: notifyTrades,
+        daily_report: dailyReport,
+        ...extra,
+      };
       if (token.trim()) body.bot_token = token.trim();
       const v = await withToast(api.saveTelegram(body), 'Telegram ayarları kaydedilemedi');
       onSaved(v);
@@ -467,7 +478,13 @@ function TelegramTab({ s, onSaved }: { s: SettingsView; onSaved: (v: SettingsVie
     }
   };
 
-  const dirty = token.trim() !== '' || chatId !== t.chat_id || enabled !== t.enabled || notifySignals !== t.notify_signals || notifyTrades !== t.notify_trades;
+  const dirty =
+    token.trim() !== '' ||
+    chatId !== t.chat_id ||
+    enabled !== t.enabled ||
+    notifySignals !== t.notify_signals ||
+    notifyTrades !== t.notify_trades ||
+    dailyReport !== (t.daily_report ?? true);
 
   return (
     <div className="space-y-4">
@@ -521,6 +538,12 @@ function TelegramTab({ s, onSaved }: { s: SettingsView; onSaved: (v: SettingsVie
             <div className="space-y-1 rounded-lg border border-line p-3">
               <Toggle checked={notifyTrades} onChange={setNotifyTrades} label="İşlem bildirimleri" description="Pozisyon açılış, hedef, stop ve kapanışları." />
               <Toggle checked={notifySignals} onChange={setNotifySignals} label="Fırsat bildirimleri" description="Otomatik mod kapalıyken yeni fırsatlar onayınıza gelir." />
+              <Toggle
+                checked={dailyReport}
+                onChange={setDailyReport}
+                label="Günlük rapor"
+                description="Her gün UTC 00:05'te (TR 03:05) özet: özsermaye, günlük K/Z, işlemler ve açık pozisyonlar."
+              />
             </div>
             <div className="flex flex-wrap gap-2">
               <Button variant="primary" icon={<Save className="h-4 w-4" />} onClick={() => void save()} loading={busy === 'save'} disabled={!dirty}>
@@ -854,7 +877,7 @@ function ScannerTab({ s, onSaved }: { s: SettingsView; onSaved: (v: SettingsView
       </Section>
 
       <Section title="Stratejiler" description="Her strateji kendi koşullarıyla fırsat üretir; risk motoru hepsini aynı kurallarla değerlendirir.">
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3">
           <div className={clsx('rounded-xl border p-4', st.s1_enabled ? 'border-accent/30 bg-accent/[0.04]' : 'border-line')}>
             <Toggle
               checked={st.s1_enabled}
@@ -892,6 +915,107 @@ function ScannerTab({ s, onSaved }: { s: SettingsView; onSaved: (v: SettingsView
             <div className="mt-4 grid grid-cols-3 gap-3">
               <Field label="Seçilecek coin sayısı">
                 <NumberInput value={st.s2_top_n} onChange={(v) => v !== null && setSt({ ...st, s2_top_n: Math.round(v) })} min={1} max={20} decimals={0} disabled={!st.s2_enabled} />
+              </Field>
+            </div>
+          </div>
+          <div className={clsx('rounded-xl border p-4', st.s3_enabled ? 'border-warn/30 bg-warn/[0.04]' : 'border-line')}>
+            <Toggle
+              checked={st.s3_enabled ?? false}
+              onChange={(v) => setSt({ ...st, s3_enabled: v })}
+              label={
+                <span className="flex items-center gap-2">
+                  S3 · Ortalamaya Dönüş <Badge tone="warn">yatay piyasa</Badge>
+                </span>
+              }
+              description="Yalnızca yatay rejimde: Bollinger bandı dışına taşan ve RSI aşırılığı görülen fiyatın ortalamaya dönüşünü hedefler. Hedef kısa, stop dar."
+            />
+            <div className="mt-3 flex items-start gap-2 rounded-lg border border-warn/25 bg-warn/[0.06] px-3 py-2 text-[11.5px] leading-relaxed text-warn">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>
+                Varsayılan kapalı; önce{' '}
+                <button type="button" className="font-semibold underline decoration-dotted" onClick={() => navigate('/backtest')}>
+                  Backtest
+                </button>{' '}
+                ile doğrulayın.
+              </span>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <Field label="Bollinger genişliği" hint="2,0 – 3,5 (standart sapma)">
+                <NumberInput
+                  value={st.s3_bb_k ?? 2.5}
+                  onChange={(v) => v !== null && setSt({ ...st, s3_bb_k: v })}
+                  suffix="σ"
+                  min={2}
+                  max={3.5}
+                  step={0.1}
+                  decimals={1}
+                  disabled={!st.s3_enabled}
+                />
+              </Field>
+              <Field label="RSI eşiği" hint="Long: RSI < eşik · Short: RSI > 100 − eşik">
+                <NumberInput
+                  value={st.s3_rsi ?? 25}
+                  onChange={(v) => v !== null && setSt({ ...st, s3_rsi: Math.round(v) })}
+                  min={15}
+                  max={35}
+                  step={1}
+                  decimals={0}
+                  disabled={!st.s3_enabled}
+                />
+              </Field>
+            </div>
+          </div>
+        </div>
+      </Section>
+
+      <Section
+        title="Analiz ve koruma"
+        description="Fırsat kalitesini artıran teyitler ve performansı bozulan stratejileri otomatik devre dışı bırakan sağlık monitörü."
+      >
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="rounded-xl border border-line p-4">
+            <Toggle
+              checked={st.oi_confirmation ?? true}
+              onChange={(v) => setSt({ ...st, oi_confirmation: v })}
+              label="Open interest (OI) teyidi"
+              description="Fiyat hareketi açık pozisyon artışıyla destekleniyorsa fırsat puanı yükselir, OI düşüyorsa (pozisyon kapanışıyla gelen hareket) puan düşer."
+            />
+          </div>
+          <div className={clsx('rounded-xl border p-4', (st.health_monitor ?? true) ? 'border-up/25 bg-up/[0.03]' : 'border-line')}>
+            <Toggle
+              checked={st.health_monitor ?? true}
+              onChange={(v) => setSt({ ...st, health_monitor: v })}
+              label={
+                <span className="flex items-center gap-2">
+                  <HeartPulse className="h-4 w-4 text-up" /> Strateji sağlık monitörü
+                </span>
+              }
+              description="Son N işlemin beklentisi eşiğin altına düşerse strateji otomatik kapatılır ve bildirim gönderilir."
+            />
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <Field label="Değerlendirilecek işlem (N)" hint="10 – 100">
+                <NumberInput
+                  value={st.health_min_trades ?? 20}
+                  onChange={(v) => v !== null && setSt({ ...st, health_min_trades: Math.round(v) })}
+                  min={10}
+                  max={100}
+                  step={1}
+                  decimals={0}
+                  suffix="işlem"
+                  disabled={!(st.health_monitor ?? true)}
+                />
+              </Field>
+              <Field label="Minimum beklenti" hint="−1 – 0 (R). Ör. −0,15R">
+                <NumberInput
+                  value={st.health_min_expectancy_r ?? -0.15}
+                  onChange={(v) => v !== null && setSt({ ...st, health_min_expectancy_r: Math.round(v * 100) / 100 })}
+                  min={-1}
+                  max={0}
+                  step={0.05}
+                  decimals={2}
+                  suffix="R"
+                  disabled={!(st.health_monitor ?? true)}
+                />
               </Field>
             </div>
           </div>

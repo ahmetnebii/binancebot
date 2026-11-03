@@ -1,5 +1,8 @@
 import { toast, useApp } from '../store/app';
 import type {
+  BacktestConfigIn,
+  BacktestJob,
+  Calibration,
   Candle,
   EquityPoint,
   EventItem,
@@ -15,6 +18,7 @@ import type {
   Signal,
   Status,
   StrategySettings,
+  SymbolAnalysis,
 } from './types';
 
 export class ApiError extends Error {
@@ -141,6 +145,17 @@ export const api = {
   equity: (range: '1d' | '7d' | '30d' | 'all') => request<EquityPoint[]>('GET', `/api/history/equity?range=${range}`),
   stats: () => request<HistoryStats>('GET', '/api/history/stats'),
   events: (limit = 200) => request<EventItem[]>('GET', `/api/events?limit=${limit}`),
+  analysis: (symbol: string) => request<SymbolAnalysis>('GET', `/api/market/analysis?symbol=${encodeURIComponent(symbol)}`),
+
+  // Backtest
+  runBacktest: (cfg: BacktestConfigIn) => request<BacktestJob>('POST', '/api/backtest/run', cfg),
+  backtestJobs: () => request<BacktestJob[]>('GET', '/api/backtest/jobs'),
+  backtestJob: (id: string) => request<BacktestJob>('GET', `/api/backtest/jobs/${encodeURIComponent(id)}`),
+  cancelBacktest: (id: string) => request<BacktestJob>('POST', `/api/backtest/jobs/${encodeURIComponent(id)}/cancel`),
+  deleteBacktest: (id: string) => request<{ ok: boolean }>('DELETE', `/api/backtest/jobs/${encodeURIComponent(id)}`),
+  applyCalibration: (id: string) => request<Calibration>('POST', `/api/backtest/jobs/${encodeURIComponent(id)}/apply-calibration`),
+  calibration: () => request<Calibration>('GET', '/api/backtest/calibration'),
+  resetCalibration: () => request<Calibration>('DELETE', '/api/backtest/calibration'),
 
   // Ayarlar
   settings: () => request<SettingsView>('GET', '/api/settings'),

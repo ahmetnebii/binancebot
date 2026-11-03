@@ -31,7 +31,8 @@ def build_result(raw: dict, *, initial_equity: float, start_ms: int, end_ms: int
     days = max(1e-9, (end_ms - start_ms) / 86_400_000)
     total_ret = (final_equity / initial_equity - 1.0) * 100.0 if initial_equity > 0 else 0.0
     cagr = None
-    if days >= 30 and final_equity > 0 and initial_equity > 0:
+    # Kısa dönemi yıla ölçeklemek yanıltıcı derecede büyük sayılar üretir; en az 90 gün gerekir
+    if days >= 90 and final_equity > 0 and initial_equity > 0:
         cagr = ((final_equity / initial_equity) ** (365.0 / days) - 1.0) * 100.0
     sharpe, sortino = M.sharpe_sortino(M.daily_returns(eq_t, eq_v))
     rs = [t["r"] for t in trades]

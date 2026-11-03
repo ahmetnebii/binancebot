@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { EventItem, EventLevel, Position, Signal, Status } from '../api/types';
+import type { BacktestJob, EventItem, EventLevel, Position, Signal, Status } from '../api/types';
 
 export type AuthState = 'unknown' | 'setup' | 'login' | 'ok';
 
@@ -26,6 +26,8 @@ interface AppState {
   mobileNavOpen: boolean;
   /** Pozisyon güncellemeleri için artan sayaç (detay sayfaları yeniden çeksin diye). */
   positionRev: Record<string, number>;
+  /** Backtest işleri (WS `backtest` mesajlarıyla güncellenir; `result` alanı burada tutulmaz). */
+  backtestJobs: Record<string, BacktestJob>;
 
   setAuth: (a: AuthState) => void;
   setStatus: (s: Status) => void;
@@ -40,6 +42,9 @@ interface AppState {
   dismissToast: (id: number) => void;
   toggleSidebar: () => void;
   setMobileNav: (v: boolean) => void;
+  setBacktestJobs: (list: BacktestJob[]) => void;
+  upsertBacktestJob: (j: BacktestJob) => void;
+  removeBacktestJob: (id: string) => void;
 }
 
 let toastSeq = 1;
@@ -66,6 +71,7 @@ export const useApp = create<AppState>((set, get) => ({
   sidebarCollapsed: readCollapsed(),
   mobileNavOpen: false,
   positionRev: {},
+  backtestJobs: {},
 
   setAuth: (auth) => set({ auth }),
   setStatus: (status) => set({ status, statusAt: Date.now() }),
@@ -117,6 +123,25 @@ export const useApp = create<AppState>((set, get) => ({
     set({ sidebarCollapsed: v });
   },
   setMobileNav: (mobileNavOpen) => set({ mobileNavOpen }),
+  setBacktestJobs: (list) => {
+    const map: Record<string, BacktestJob> = {};
+    for (const j of list) {
+      const { result: _drop, ...light } = j;
+      void _drop;
+      map[j.id] = light;
+    }
+    set({ backtestJobs: map });
+  },
+  upsertBacktestJob: (j) => {
+    const { result: _drop, ...light } = j;
+    void _drop;
+    set({ backtestJobs: { ...get().backtestJobs, [j.id]: light } });
+  },
+  removeBacktestJob: (id) => {
+    const next = { ...get().backtestJobs };
+    delete next[id];
+    set({ backtestJobs: next });
+  },
 }));
 
 export const toast = {

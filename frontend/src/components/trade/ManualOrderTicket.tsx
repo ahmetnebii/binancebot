@@ -7,6 +7,7 @@ import { useDebounced } from '../../lib/hooks';
 import { fmtCompact, fmtLev, fmtPct, fmtPrice, fmtUsd } from '../../lib/format';
 import { navigate } from '../../lib/router';
 import { useApp } from '../../store/app';
+import { SymbolAnalysisPanel } from '../analysis/SymbolAnalysisPanel';
 import { TradeChart, type ChartOverlay } from '../charts/TradeChart';
 import { Field, NumberInput, Slider } from '../ui/form';
 import { Drawer, InfoTip, useConfirm } from '../ui/overlay';
@@ -315,6 +316,7 @@ export function ManualOrderTicket({
               <div className="flex h-[470px] items-center justify-center text-[12.5px] text-subtle">Sembol seçin</div>
             )}
           </div>
+          {symbol && <SymbolAnalysisPanel key={symbol} symbol={symbol} compact />}
         </div>
         <div className="space-y-4">
           <div className="card space-y-4 p-4">

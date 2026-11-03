@@ -258,6 +258,13 @@ export interface StrategyStats {
   expectancy_r: number | null;
 }
 
+/** R aralığı [from, to) içindeki işlem sayısı. */
+export interface RBin {
+  from: number;
+  to: number;
+  count: number;
+}
+
 export interface HistoryStats {
   trades: number;
   wins: number;
@@ -271,6 +278,210 @@ export interface HistoryStats {
   best_r: number | null;
   worst_r: number | null;
   by_strategy: StrategyStats[];
+  /** Eski sunucularda olmayabilir. */
+  r_histogram?: RBin[];
+  monthly?: { month: string; pnl: number; trades: number }[];
+}
+
+/* ------------------------------------------------------------------ */
+/* Sembol analizi                                                       */
+/* ------------------------------------------------------------------ */
+
+export type TrendDir = 'up' | 'down' | 'flat';
+
+export interface TfAnalysis {
+  tf: '15m' | '1h' | '4h';
+  trend: TrendDir;
+  ema_stack: string;
+  rsi: number | null;
+  adx: number | null;
+  /** yüzde (ATR / fiyat × 100) */
+  atr_pct: number | null;
+  /** 0 = alt bant, 1 = üst bant */
+  bb_pctb: number | null;
+  dist_ema20_atr: number | null;
+  vol_z: number | null;
+  /** yüzde, son 24 barlık değişim */
+  change_pct: number | null;
+}
+
+export interface SymbolAnalysis {
+  symbol: string;
+  price: number | null;
+  updated_at: number;
+  timeframes: TfAnalysis[];
+  confluence: { long: number; short: number; label: string };
+  derivatives: {
+    /** kesir (0.0001 = %0,01 / 8 saat) */
+    funding_rate: number | null;
+    next_funding_time: number | null;
+    /** yüzde */
+    oi_change_1h_pct: number | null;
+    liq_long_1h: number | null;
+    liq_short_1h: number | null;
+  };
+  market: {
+    /** yüzde */
+    change_24h_pct: number | null;
+    quote_volume_24h: number | null;
+    volume_rank: number | null;
+    btc_corr: number | null;
+    btc_beta: number | null;
+    /** yüzde */
+    rs_24h_pct: number | null;
+  };
+  liquidity: { bid: number | null; ask: number | null; spread_bps: number | null };
+  regime: Regime;
+  notes: string[];
+}
+
+/* ------------------------------------------------------------------ */
+/* Backtest                                                             */
+/* ------------------------------------------------------------------ */
+
+export interface BacktestConfigIn {
+  days?: number;
+  top_n?: number;
+  symbols?: string[];
+  strategies?: { s1?: boolean; s2?: boolean; s3?: boolean };
+  initial_equity?: number;
+  slippage_bps?: number;
+  taker_fee?: number;
+  maker_fee?: number;
+}
+
+export interface BacktestConfig {
+  days: number;
+  top_n: number;
+  symbols: string[];
+  strategies: { s1?: boolean; s2?: boolean; s3?: boolean };
+  initial_equity: number;
+  slippage_bps: number;
+  taker_fee: number;
+  maker_fee: number;
+}
+
+export interface BacktestSummary {
+  trades: number;
+  /** kesir */
+  win_rate: number | null;
+  profit_factor: number | null;
+  expectancy_r: number | null;
+  /** yüzde */
+  total_return_pct: number;
+  /** yüzde */
+  max_drawdown_pct: number;
+  sharpe: number | null;
+  period_start: number;
+  period_end: number;
+  symbols: number;
+}
+
+export type BacktestStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+export type BacktestPhase = 'data' | 'simulate' | 'analyze' | 'done';
+
+export interface CalibrationStats {
+  n: number;
+  win_rate: number;
+  avg_win_r: number;
+  avg_loss_r: number;
+  expectancy_r: number;
+}
+
+export interface BacktestStrategyRow {
+  strategy: string;
+  strategy_name: string;
+  trades: number;
+  win_rate: number | null;
+  profit_factor: number | null;
+  expectancy_r: number | null;
+  total_pnl: number;
+  avg_win_r: number | null;
+  avg_loss_r: number | null;
+}
+
+export interface BacktestTrade {
+  symbol: string;
+  side: Side;
+  strategy: string;
+  entry_time: number;
+  exit_time: number;
+  entry_price: number;
+  exit_price: number;
+  r: number;
+  pnl: number;
+  fees: number;
+  reason: string;
+  hold_bars: number;
+}
+
+export interface BacktestResult {
+  summary: BacktestSummary & {
+    cagr_pct: number | null;
+    sortino: number | null;
+    calmar: number | null;
+    avg_win_r: number | null;
+    avg_loss_r: number | null;
+    best_r: number | null;
+    worst_r: number | null;
+    avg_hold_hours: number | null;
+    /** yüzde */
+    exposure_pct: number;
+    trades_per_day: number;
+    fees_total: number;
+    funding_total: number;
+    initial_equity: number;
+    final_equity: number;
+  };
+  by_strategy: BacktestStrategyRow[];
+  by_side: { side: Side; trades: number; win_rate: number | null; expectancy_r: number | null; total_pnl: number }[];
+  /** time saniye; drawdown_pct yüzde (negatif ya da pozitif gelebilir) */
+  equity: { time: number; equity: number; drawdown_pct: number }[];
+  monthly: { month: string; return_pct: number }[];
+  r_histogram: RBin[];
+  monte_carlo: {
+    runs: number;
+    dd_p50: number;
+    dd_p95: number;
+    dd_p99: number;
+    final_p5: number;
+    final_p50: number;
+    final_p95: number;
+    /** kesir */
+    prob_dd_20: number;
+    prob_dd_30: number;
+  } | null;
+  walk_forward: {
+    fold: number;
+    start: number;
+    end: number;
+    trades: number;
+    expectancy_r: number | null;
+    profit_factor: number | null;
+    return_pct: number;
+  }[];
+  trades: BacktestTrade[];
+  calibration: Record<string, CalibrationStats>;
+  data_source: 'binance' | 'synthetic';
+  warnings: string[];
+}
+
+export interface BacktestJob {
+  id: string;
+  created_at: number;
+  finished_at: number | null;
+  status: BacktestStatus;
+  progress: { phase: BacktestPhase; pct: number; message: string };
+  config: BacktestConfig;
+  error: string | null;
+  summary: BacktestSummary | null;
+  result?: BacktestResult;
+}
+
+export interface Calibration {
+  source_job: string | null;
+  applied_at: number | null;
+  strategies: Record<string, CalibrationStats>;
 }
 
 export type RiskProfile = 'temkinli' | 'dengeli' | 'agresif' | 'ozel';
@@ -319,6 +530,14 @@ export interface StrategySettings {
   s1_vol_z: number;
   s1_atr_mult: number;
   s2_top_n: number;
+  // Tur 2 eklemeleri (eski sunucularda olmayabilir)
+  s3_enabled?: boolean;
+  s3_bb_k?: number;
+  s3_rsi?: number;
+  oi_confirmation?: boolean;
+  health_monitor?: boolean;
+  health_min_trades?: number;
+  health_min_expectancy_r?: number;
 }
 
 export interface PaperSettings {
@@ -350,6 +569,7 @@ export interface SettingsView {
     bot_token_hint: string;
     notify_signals: boolean;
     notify_trades: boolean;
+    daily_report?: boolean;
   };
   risk: RiskSettings;
   scanner: ScannerSettings;
@@ -371,4 +591,5 @@ export type WsMessage =
   | { type: 'position'; data: Position }
   | { type: 'event'; data: EventItem }
   | { type: 'kline'; data: { symbol: string; interval: string; candle: Candle } }
-  | { type: 'toast'; data: ToastMsg };
+  | { type: 'toast'; data: ToastMsg }
+  | { type: 'backtest'; data: BacktestJob };

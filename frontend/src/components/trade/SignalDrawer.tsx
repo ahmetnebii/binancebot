@@ -7,13 +7,14 @@ import { useDebounced } from '../../lib/hooks';
 import { fmtDateTime, fmtLev, fmtNum, fmtPct, fmtPrice, fmtQty, fmtR, fmtUsd, tfLabel } from '../../lib/format';
 import { navigate } from '../../lib/router';
 import { useApp } from '../../store/app';
+import { SymbolAnalysisPanel } from '../analysis/SymbolAnalysisPanel';
 import { TradeChart } from '../charts/TradeChart';
 import { NumberInput, Slider } from '../ui/form';
 import { Drawer, InfoTip, useConfirm } from '../ui/overlay';
 import { Badge, Button, SideBadge, Switch } from '../ui/primitives';
 import { ScoreRing } from '../ui/viz';
 import { MULTIPLIER_LABELS, signalOverlay, strategyTone } from './helpers';
-import { Countdown, statusText } from './SignalCard';
+import { Countdown, SignalInsightChips, statusText } from './SignalCard';
 import { useRiskBounds } from './useRiskBounds';
 
 const FEATURE_LABELS: Record<string, string> = {
@@ -35,14 +36,38 @@ const FEATURE_LABELS: Record<string, string> = {
   alpha_24h: 'Alfa 24 sa',
   beta: "BTC'ye beta",
   oi_change: 'OI değişimi',
+  oi_change_1h: 'OI değişimi (1 sa)',
+  oi_change_1h_pct: 'OI değişimi (1 sa)',
   donchian_high: 'Donchian üst',
   donchian_low: 'Donchian alt',
+  ext_atr: "EMA20'den uzaklık (ATR)",
+  squeeze_rank: 'Sıkışma yüzdeliği',
+  rs_24h: "BTC'ye göre güç (24 sa)",
+  alpha_72h: 'Alfa 72 sa',
+  rank: 'Sıralama',
+  mtf_long: 'Yükseliş uyumu (zaman dilimi)',
+  mtf_short: 'Düşüş uyumu (zaman dilimi)',
+  mtf_aligned: 'Zaman dilimi uyumu',
+  calibrated: 'Kalibre edilmiş EV',
+  vwap_dev: 'VWAP sapması (σ)',
+  spread_bps: 'Spread (bps)',
+  rsi_15m: 'RSI (15 dk)',
+  bb_pctb: 'Bollinger %B',
 };
 
-const PCT_FEATURES = new Set(['atr_pct', 'funding', 'funding_rate', 'oi_change', 'alpha_24h']);
+/** Değeri kesir olan (0.01 = %1) özellikler. */
+const FRACTION_FEATURES = new Set(['funding', 'funding_rate', 'alpha_24h', 'alpha_72h', 'rs_24h', 'oi_change']);
+/** Değeri yüzde birimli olan (3.4 = %3,4) özellikler (`*_pct` dışındakiler). */
+const PERCENT_UNIT_FEATURES = new Set(['oi_change_1h']);
+const SQUEEZE_RANK = 'squeeze_rank';
 
 function featureValue(k: string, v: number): string {
-  if (PCT_FEATURES.has(k)) return fmtPct(v, { sign: k !== 'atr_pct', digits: k.startsWith('funding') ? 4 : 2 });
+  if (k === 'mtf_aligned') return `${Math.round(v)}/3`;
+  if (k === 'calibrated') return v >= 0.5 ? 'evet' : 'hayır';
+  // API birim tablosu: *_pct alanları yüzde birimlidir (1.25 = %1,25).
+  if (k.endsWith('_pct') || PERCENT_UNIT_FEATURES.has(k)) return fmtPct(v / 100, { sign: k !== 'atr_pct', digits: 2 });
+  if (FRACTION_FEATURES.has(k)) return fmtPct(v, { sign: true, digits: k.startsWith('funding') ? 4 : 2 });
+  if (k === SQUEEZE_RANK || k === 'taker_ratio') return fmtPct(v, { digits: 0 });
   if (Math.abs(v) >= 1000) return fmtNum(v, 0);
   if (Math.abs(v) >= 10) return fmtNum(v, 1);
   return fmtNum(v, 2);
@@ -413,6 +438,7 @@ export function SignalDrawer({
                   <dd>1 : {fmtNum(s.rr, 1)}</dd>
                 </div>
               </dl>
+              <SignalInsightChips features={s.features} className="px-4 pb-3" />
             </div>
           </div>
           <div className="card">
@@ -452,6 +478,7 @@ export function SignalDrawer({
               {!active && s.status_note && <div className="text-[12px] text-subtle">{s.status_note}</div>}
             </div>
           </div>
+          <SymbolAnalysisPanel symbol={s.symbol} />
         </div>
 
         <div className="space-y-4">

@@ -1,8 +1,9 @@
 import clsx from 'clsx';
-import { AlertTriangle, ChevronRight, Clock, Eye, X } from 'lucide-react';
+import { AlertTriangle, ChevronRight, Clock, Eye, Layers, Sparkles, X } from 'lucide-react';
+import type { ReactNode } from 'react';
 import type { Signal } from '../../api/types';
 import { useNow } from '../../lib/hooks';
-import { fmtCountdown, fmtLev, fmtPct, fmtPrice, fmtR, fmtUsd, tfLabel } from '../../lib/format';
+import { fmtCountdown, fmtLev, fmtPct, fmtPrice, fmtR, fmtUsd, pnlClass, tfLabel } from '../../lib/format';
 import { Badge, Button, SideBadge } from '../ui/primitives';
 import { ScoreRing } from '../ui/viz';
 import { strategyTone } from './helpers';
@@ -22,6 +23,46 @@ export function Countdown({ until, className }: { until: number; className?: str
       {fmtCountdown(left)}
     </span>
   );
+}
+
+/**
+ * Sinyal özelliklerinden kısa göstergeler: zaman dilimi uyumu (mtf_aligned 1-3),
+ * open interest değişimi (oi_change_1h, yüzde) ve kalibre edilmiş EV (calibrated = 1).
+ */
+export function SignalInsightChips({ features, className }: { features: Record<string, number> | undefined; className?: string }) {
+  const f = features ?? {};
+  const items: ReactNode[] = [];
+  const mtf = f.mtf_aligned;
+  if (typeof mtf === 'number' && Number.isFinite(mtf)) {
+    items.push(
+      <Badge
+        key="mtf"
+        tone={mtf >= 3 ? 'up' : mtf >= 2 ? 'accent' : 'neutral'}
+        title="15 dk · 1 sa · 4 sa trendlerinden sinyal yönüyle uyumlu olanların sayısı"
+      >
+        <Layers className="h-3 w-3" />
+        Zaman dilimi uyumu {Math.round(mtf)}/3
+      </Badge>,
+    );
+  }
+  const oi = f.oi_change_1h;
+  if (typeof oi === 'number' && Number.isFinite(oi)) {
+    items.push(
+      <Badge key="oi" tone="neutral" title="Açık pozisyon (open interest) son 1 saatteki değişimi">
+        OI 1 sa <span className={pnlClass(oi)}>{fmtPct(oi / 100, { sign: true, digits: 1 })}</span>
+      </Badge>,
+    );
+  }
+  if ((f.calibrated ?? 0) >= 0.5) {
+    items.push(
+      <Badge key="cal" tone="proj" title="Beklenti ve kazanma olasılığı uygulanan backtest kalibrasyonundan hesaplandı">
+        <Sparkles className="h-3 w-3" />
+        Kalibre EV
+      </Badge>,
+    );
+  }
+  if (!items.length) return null;
+  return <div className={clsx('flex flex-wrap items-center gap-1.5', className)}>{items}</div>;
 }
 
 function Level({ label, price, entry, tone }: { label: string; price: number; entry: number; tone?: 'up' | 'down' | 'neutral' }) {
@@ -79,6 +120,7 @@ export function SignalCard({
               )}
             </span>
           </div>
+          <SignalInsightChips features={s.features} className="mt-2" />
         </div>
         <div className="flex flex-col items-end gap-1">
           {active ? <Countdown until={s.expires_at} /> : <Badge tone="neutral">{statusText(s.status)}</Badge>}

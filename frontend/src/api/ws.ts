@@ -36,6 +36,9 @@ function handle(msg: WsMessage) {
     case 'toast':
       st.pushToast({ level: msg.data.level, title: msg.data.title, message: msg.data.message });
       break;
+    case 'backtest':
+      st.upsertBacktestJob(msg.data);
+      break;
     case 'kline': {
       const set = klineListeners.get(keyOf(msg.data.symbol, msg.data.interval));
       if (set) for (const cb of set) cb(msg.data.candle);

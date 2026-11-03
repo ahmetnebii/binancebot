@@ -1,8 +1,11 @@
 import clsx from 'clsx';
-import { BarChart3, History as HistoryIcon } from 'lucide-react';
+import { BarChart3, CalendarRange, Gauge, History as HistoryIcon } from 'lucide-react';
 import { api } from '../api/client';
 import type { HistoryStats, Position } from '../api/types';
+import { MonthlyHeatmap } from '../components/analytics/MonthlyHeatmap';
+import { RHistogram } from '../components/analytics/RHistogram';
 import { ClosedPositionsTable } from '../components/trade/PositionViews';
+import { InfoTip } from '../components/ui/overlay';
 import { Card, CardHeader, Empty, Skeleton } from '../components/ui/primitives';
 import { useAsync } from '../lib/hooks';
 import { fmtNum, fmtPct, fmtR, fmtUsd, pnlClass } from '../lib/format';
@@ -46,6 +49,32 @@ export function History() {
           <div className="px-4 py-5 text-[12.5px] text-muted">İstatistikler alınamadı: {stats.error}</div>
         )}
       </Card>
+
+      {s && (s.r_histogram !== undefined || s.monthly !== undefined) && (
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)]">
+          <Card>
+            <CardHeader
+              title="R dağılımı"
+              subtitle="Kapanan işlemlerin risk birimi (R) cinsinden sonucu"
+              icon={<Gauge className="h-4 w-4" />}
+              right={<InfoTip>1R, işlemde riske edilen tutardır. Kırmızı çubuklar kayıplar, yeşiller kazançlardır.</InfoTip>}
+            />
+            <div className="px-4 pb-4 pt-2">
+              <RHistogram bins={s.r_histogram ?? []} height={170} />
+            </div>
+          </Card>
+          <Card>
+            <CardHeader title="Aylık K/Z" subtitle="USDT · yıl sütunu toplamdır" icon={<CalendarRange className="h-4 w-4" />} />
+            <div className="px-3 pb-3">
+              <MonthlyHeatmap
+                values={(s.monthly ?? []).map((m) => ({ month: m.month, value: m.pnl, extra: `${m.trades} işlem` }))}
+                mode="usd"
+                format={(v) => fmtUsd(v, { sign: true, digits: Math.abs(v) >= 1000 ? 0 : 2 })}
+              />
+            </div>
+          </Card>
+        </div>
+      )}
 
       {s && s.by_strategy.length > 0 && (
         <Card>

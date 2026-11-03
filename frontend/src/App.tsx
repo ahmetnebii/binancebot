@@ -7,6 +7,7 @@ import { Toaster } from './components/ui/toaster';
 import { useInterval } from './lib/hooks';
 import { useRoute } from './lib/router';
 import { LoginScreen, SetupScreen } from './pages/Auth';
+import { Backtest } from './pages/Backtest';
 import { Dashboard } from './pages/Dashboard';
 import { History } from './pages/History';
 import { Logs } from './pages/Logs';
@@ -72,6 +73,9 @@ function Authed() {
       break;
     case 'history':
       page = <History />;
+      break;
+    case 'backtest':
+      page = <Backtest id={route.id} />;
       break;
     case 'settings':
       page = <Settings tab={route.tab} />;

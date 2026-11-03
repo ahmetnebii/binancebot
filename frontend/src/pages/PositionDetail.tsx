@@ -19,6 +19,7 @@ import type { ReactNode } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { api, withToast } from '../api/client';
 import type { Position, PositionDetail as PD, PositionEvent, Projection } from '../api/types';
+import { SymbolAnalysisPanel } from '../components/analysis/SymbolAnalysisPanel';
 import { TradeChart } from '../components/charts/TradeChart';
 import { closeReasonText, positionOverlay, strategyTone } from '../components/trade/helpers';
 import { SourceIcon } from '../components/trade/PositionViews';
@@ -604,6 +605,7 @@ export function PositionDetail({ id }: { id: string }) {
               </div>
             </Card>
           </div>
+          {isOpen && <SymbolAnalysisPanel symbol={p.symbol} />}
         </div>
 
         <div className="space-y-4">

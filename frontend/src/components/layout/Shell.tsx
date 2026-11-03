@@ -3,6 +3,7 @@ import {
   AlertOctagon,
   AlertTriangle,
   CandlestickChart,
+  FlaskConical,
   History,
   LayoutDashboard,
   LogOut,
@@ -34,6 +35,7 @@ const NAV: { key: Route['page']; label: string; href: string; icon: ReactNode; m
   { key: 'opportunities', label: 'Fırsatlar', href: '/firsatlar', icon: <Radar className="h-[18px] w-[18px]" />, mobile: true },
   { key: 'positions', label: 'Pozisyonlar', href: '/pozisyonlar', icon: <CandlestickChart className="h-[18px] w-[18px]" />, mobile: true },
   { key: 'history', label: 'Geçmiş', href: '/gecmis', icon: <History className="h-[18px] w-[18px]" />, mobile: true },
+  { key: 'backtest', label: 'Backtest', href: '/backtest', icon: <FlaskConical className="h-[18px] w-[18px]" /> },
   { key: 'settings', label: 'Ayarlar', href: '/ayarlar', icon: <Settings2 className="h-[18px] w-[18px]" />, mobile: true },
   { key: 'logs', label: 'Günlük', href: '/gunluk', icon: <ScrollText className="h-[18px] w-[18px]" /> },
 ];
@@ -441,6 +443,11 @@ function TopBar({ status }: { status: Status | null }) {
               </MenuItem>
             </div>
           )}
+          <div className="lg:hidden">
+            <MenuItem icon={<FlaskConical className="h-4 w-4" />} onClick={() => { setMenu(false); navigate('/backtest'); }}>
+              Backtest
+            </MenuItem>
+          </div>
           <MenuItem icon={<ScrollText className="h-4 w-4" />} onClick={() => { setMenu(false); navigate('/gunluk'); }}>
             Sistem günlüğü
           </MenuItem>

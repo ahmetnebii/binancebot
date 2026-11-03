@@ -95,14 +95,17 @@ export function Badge({
   children,
   className,
   dot,
+  title,
 }: {
   tone?: Tone;
   children: ReactNode;
   className?: string;
   dot?: boolean;
+  title?: string;
 }) {
   return (
     <span
+      title={title}
       className={clsx(
         'inline-flex h-[22px] items-center gap-1.5 whitespace-nowrap rounded-md border px-2 text-[11px] font-semibold tracking-wide',
         toneCls[tone],

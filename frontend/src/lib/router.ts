@@ -6,6 +6,7 @@ export type Route =
   | { page: 'positions'; tab?: string }
   | { page: 'position'; id: string }
   | { page: 'history' }
+  | { page: 'backtest'; id?: string }
   | { page: 'settings'; tab?: string }
   | { page: 'logs' };
 
@@ -21,6 +22,8 @@ export function parseHash(hash: string): Route {
       return b ? { page: 'position', id: b } : { page: 'positions' };
     case 'gecmis':
       return { page: 'history' };
+    case 'backtest':
+      return { page: 'backtest', id: b || undefined };
     case 'ayarlar':
       return { page: 'settings', tab: b || undefined };
     case 'gunluk':
