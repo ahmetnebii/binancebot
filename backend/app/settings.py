@@ -156,6 +156,12 @@ class StrategySettings(BaseModel):
     s4_donchian: int = Field(30, ge=10, le=120)
     s4_atr_mult: float = Field(2.5, ge=1.0, le=6.0)
     s4_sides: Literal["both", "long", "short"] = "both"
+    # S5: klasik grafik formasyonları (omuz-baş-omuz, ikili tepe/dip, üçgen)
+    s5_enabled: bool = False
+    s5_pivot: int = Field(5, ge=3, le=10)
+    s5_tol: float = Field(1.0, ge=0.3, le=2.0)
+    s5_vol_z: float = Field(1.0, ge=0.0, le=3.0)
+    s5_sides: Literal["both", "long", "short"] = "both"
     # Ortak filtreler (tüm stratejilere uygulanır)
     regime_filter: Literal["normal", "strict"] = "normal"
     funding_max: float = Field(0.0005, ge=0.0001, le=0.005)

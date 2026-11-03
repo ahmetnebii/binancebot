@@ -30,14 +30,14 @@ def test_generate_candidates_two_stage():
     for c in cands:
         s = c["strategies"]
         assert set(s) == set(base["strategies"])  # aynı anahtar kümesi
-        assert s["s1_enabled"] or s["s2_enabled"] or s["s3_enabled"] or s["s4_enabled"]
+        assert any(s[f"s{i}_enabled"] for i in range(1, 6))
         assert describe(c)["label"]
-    assert len(structures()) == 40
+    assert len(structures()) == 52
     ref = refine_candidates(cands[1:4], 16, set(keys))
     assert len(ref) == 16 and not ({_key(r) for r in ref} & keys)
     for r in ref:  # yapı (hangi stratejiler açık) korunur
-        on = tuple(r["strategies"][f"s{i}_enabled"] for i in range(1, 5))
-        assert on in {tuple(c["strategies"][f"s{i}_enabled"] for i in range(1, 5)) for c in cands[1:4]}
+        on = tuple(r["strategies"][f"s{i}_enabled"] for i in range(1, 6))
+        assert on in {tuple(c["strategies"][f"s{i}_enabled"] for i in range(1, 6)) for c in cands[1:4]}
         StrategySettings.model_validate(r["strategies"])  # geçerli ayar
 
 

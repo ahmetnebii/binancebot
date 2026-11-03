@@ -1023,6 +1023,33 @@ function ScannerTab({ s, onSaved }: { s: SettingsView; onSaved: (v: SettingsView
               </Field>
             </div>
           </div>
+          <div className={clsx('rounded-xl border p-4', st.s5_enabled ? 'border-proj/30 bg-proj/[0.04]' : 'border-line')}>
+            <Toggle
+              checked={st.s5_enabled ?? false}
+              onChange={(v) => setSt({ ...st, s5_enabled: v })}
+              label={
+                <span className="flex items-center gap-2">
+                  S5 · Grafik Formasyonları <Badge tone="proj">1 sa</Badge>
+                </span>
+              }
+              description="Omuz-baş-omuz (ve tersi), ikili tepe/dip, yükselen/alçalan üçgen. Dönüm noktalarından nesnel kurallarla tanınır; giriş boyun çizgisinin taze kırılımında, hedef formasyon yüksekliği kadar."
+            />
+            <div className="mt-3 flex items-center gap-2">
+              <span className="text-[11.5px] text-subtle">Yön</span>
+              <Segmented size="xs" value={st.s5_sides ?? 'both'} onChange={(v) => setSt({ ...st, s5_sides: v })} options={SIDE_OPTIONS} />
+            </div>
+            <div className="mt-3 grid grid-cols-3 gap-3">
+              <Field label="Pivot penceresi" hint="Dönüm noktası için her yanda gereken mum">
+                <NumberInput value={st.s5_pivot ?? 5} onChange={(v) => v !== null && setSt({ ...st, s5_pivot: Math.round(v) })} suffix="mum" min={3} max={10} decimals={0} disabled={!st.s5_enabled} />
+              </Field>
+              <Field label="Seviye toleransı" hint="Omuz/dip benzerliği (ATR katı)">
+                <NumberInput value={st.s5_tol ?? 1} onChange={(v) => v !== null && setSt({ ...st, s5_tol: v })} suffix="×" min={0.3} max={2} step={0.1} decimals={1} disabled={!st.s5_enabled} />
+              </Field>
+              <Field label="Kırılım hacmi (z)">
+                <NumberInput value={st.s5_vol_z ?? 1} onChange={(v) => v !== null && setSt({ ...st, s5_vol_z: v })} min={0} max={3} step={0.5} decimals={1} disabled={!st.s5_enabled} />
+              </Field>
+            </div>
+          </div>
         </div>
       </Section>
 

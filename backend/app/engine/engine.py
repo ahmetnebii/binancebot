@@ -25,6 +25,7 @@ from ..risk.sizing import approx_liq_price, symbol_class
 from ..settings import SettingsStore
 from ..strategies.base import StrategyContext, apply_exit_profile, passes_filters
 from ..strategies.mean_reversion import MeanReversion
+from ..strategies.patterns import ChartPatterns
 from ..strategies.trend_follow import TrendFollow, is_4h_close
 from ..strategies.rs_rotation import RSRotation
 from ..strategies.scorer import estimate
@@ -93,6 +94,7 @@ class Engine:
         self.s2 = RSRotation()
         self.s3 = MeanReversion()
         self.s4 = TrendFollow()
+        self.s5 = ChartPatterns()
         self.calibration: dict = {}
         self._last_report_day: Optional[int] = None
         self.scanner: dict = {"last_scan_at": None, "next_scan_at": None, "scanned_symbols": 0}
@@ -301,14 +303,19 @@ class Engine:
         t0 = time.perf_counter()
         if tf == "1h" and self.store.strategies.s2_enabled:
             found += self.s2.evaluate_universe(universe, ctx)
+        hourly = []
         if tf == "1h" and self.store.strategies.s4_enabled and is_4h_close(ctx.now):
+            hourly.append(self.s4)
+        if tf == "1h" and self.store.strategies.s5_enabled:
+            hourly.append(self.s5)
+        for strat in hourly:
             for sym in universe:
                 if sym in self.store.scanner.blacklist:
                     continue
                 try:
-                    sig = self.s4.evaluate(sym, ctx)
+                    sig = strat.evaluate(sym, ctx)
                 except Exception:
-                    log.exception("S4 değerlendirme hatası (%s)", sym)
+                    log.exception("%s değerlendirme hatası (%s)", strat.code, sym)
                     continue
                 if sig:
                     found.append(sig)
@@ -460,7 +467,7 @@ class Engine:
     async def _check_strategy_health(self, strategy: str) -> None:
         """Son N işlemin beklentisi eşiğin altına düşen stratejiyi otomatik kapatır."""
         cfg = self.store.strategies
-        key = {"S1": "s1_enabled", "S2": "s2_enabled", "S3": "s3_enabled", "S4": "s4_enabled"}.get(strategy)
+        key = {"S1": "s1_enabled", "S2": "s2_enabled", "S3": "s3_enabled", "S4": "s4_enabled", "S5": "s5_enabled"}.get(strategy)
         if not cfg.health_monitor or key is None or not getattr(cfg, key):
             return
         closed = [

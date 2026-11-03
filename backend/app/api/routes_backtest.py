@@ -17,6 +17,7 @@ class StrategyFlags(BaseModel):
     s2: Optional[bool] = None
     s3: Optional[bool] = None
     s4: Optional[bool] = None
+    s5: Optional[bool] = None
 
 
 class BacktestConfigIn(BaseModel):

@@ -28,6 +28,7 @@ from .simulator import Backtester, BacktestConfig
 STRATEGY_SETS: list[tuple[str, ...]] = [
     ("S1",), ("S2",), ("S4",), ("S1", "S2"), ("S1", "S4"), ("S2", "S4"),
     ("S1", "S2", "S4"), ("S4", "S3"), ("S1", "S3"), ("S1", "S2", "S3"),
+    ("S5",), ("S4", "S5"), ("S1", "S5"),
 ]
 SPACE = {
     "s1_donchian": [36, 48, 72],
@@ -38,6 +39,9 @@ SPACE = {
     "s3_rsi": [20.0, 25.0, 30.0],
     "s4_donchian": [20, 30, 42],
     "s4_atr_mult": [2.0, 2.5, 3.0, 3.5],
+    "s5_pivot": [4, 5, 7],
+    "s5_tol": [0.6, 1.0, 1.5],
+    "s5_vol_z": [0.5, 1.0, 1.5],
     "funding_max": [0.0003, 0.0005, 0.001],
     "exit_profile": ["standard", "runner", "quick"],
     "min_ev_r": [0.0, 0.1, 0.2],
@@ -64,7 +68,7 @@ def _make_config(params: dict, start: int, end: int, base: dict) -> BacktestConf
     risk = RiskSettings.model_validate({**base["risk"], "min_ev_r": params["min_ev_r"]})
     return BacktestConfig(
         symbols=base["symbols"], start_ms=start, end_ms=end, initial_equity=base["initial_equity"],
-        s1=strat.s1_enabled, s2=strat.s2_enabled, s3=strat.s3_enabled, s4=strat.s4_enabled,
+        s1=strat.s1_enabled, s2=strat.s2_enabled, s3=strat.s3_enabled, s4=strat.s4_enabled, s5=strat.s5_enabled,
         slippage_bps=base["slippage_bps"], taker_fee=base["taker_fee"], maker_fee=base["maker_fee"],
         risk=risk, strategies=strat, scanner=ScannerSettings.model_validate(base["scanner"]),
     )
@@ -111,10 +115,10 @@ def params_from_settings(strategies: StrategySettings, risk: RiskSettings) -> di
 
 
 STRATEGY_KEYS = (
-    "s1_enabled", "s2_enabled", "s3_enabled", "s4_enabled",
-    "s1_sides", "s2_sides", "s3_sides", "s4_sides",
+    "s1_enabled", "s2_enabled", "s3_enabled", "s4_enabled", "s5_enabled",
+    "s1_sides", "s2_sides", "s3_sides", "s4_sides", "s5_sides",
     "s1_donchian", "s1_vol_z", "s1_atr_mult", "s2_top_n", "s3_bb_k", "s3_rsi",
-    "s4_donchian", "s4_atr_mult", "regime_filter", "funding_max", "exit_profile",
+    "s4_donchian", "s4_atr_mult", "s5_pivot", "s5_tol", "s5_vol_z", "regime_filter", "funding_max", "exit_profile",
 )
 
 
@@ -174,6 +178,8 @@ def _build(sset: tuple[str, ...], strat: dict, min_ev: float, sides_all: Optiona
            rng: Optional[random.Random] = None, regime: str = "normal") -> dict:
     s = {
         "s1_enabled": "S1" in sset, "s2_enabled": "S2" in sset, "s3_enabled": "S3" in sset, "s4_enabled": "S4" in sset,
+        "s5_enabled": "S5" in sset, "s5_pivot": strat.get("s5_pivot", 5), "s5_tol": strat.get("s5_tol", 1.0),
+        "s5_vol_z": strat.get("s5_vol_z", 1.0),
         "s1_donchian": strat.get("s1_donchian", 48), "s1_vol_z": strat.get("s1_vol_z", 2.0),
         "s1_atr_mult": strat.get("s1_atr_mult", 2.0), "s2_top_n": strat.get("s2_top_n", 3),
         "s3_bb_k": strat.get("s3_bb_k", 2.5), "s3_rsi": strat.get("s3_rsi", 25.0),
@@ -181,7 +187,7 @@ def _build(sset: tuple[str, ...], strat: dict, min_ev: float, sides_all: Optiona
         "regime_filter": regime, "funding_max": strat.get("funding_max", 0.0005),
         "exit_profile": strat.get("exit_profile", "standard"),
     }
-    for code in ("s1", "s2", "s3", "s4"):
+    for code in ("s1", "s2", "s3", "s4", "s5"):
         if sides_all is not None:
             s[f"{code}_sides"] = sides_all
         elif rng is not None:
@@ -208,10 +214,12 @@ def describe(params: dict) -> dict:
         parts.append(f"S3 Ortalamaya Dönüş ({SIDE_TR[s['s3_sides']]}; BB k={s['s3_bb_k']:g}, RSI {s['s3_rsi']:g})")
     if s["s4_enabled"]:
         parts.append(f"S4 4s Trend Takibi ({SIDE_TR[s['s4_sides']]}; kanal {s['s4_donchian']} mum, stop {s['s4_atr_mult']:g}×ATR)")
+    if s["s5_enabled"]:
+        parts.append(f"S5 Grafik Formasyonları ({SIDE_TR[s['s5_sides']]}; pivot {s['s5_pivot']} mum, tolerans {s['s5_tol']:g}×ATR, hacim z ≥ {s['s5_vol_z']:g})")
     parts.append("Rejim filtresi: " + ("sıkı (yalnızca piyasa yönünde)" if s["regime_filter"] == "strict" else "normal"))
     parts.append(f"Funding sınırı: %{s['funding_max'] * 100:.2f} · Çıkış: {EXIT_TR[s['exit_profile']]}")
     label = " + ".join(
-        code for code, on in (("S1", s["s1_enabled"]), ("S2", s["s2_enabled"]), ("S3", s["s3_enabled"]), ("S4", s["s4_enabled"])) if on
+        code for code, on in (("S1", s["s1_enabled"]), ("S2", s["s2_enabled"]), ("S3", s["s3_enabled"]), ("S4", s["s4_enabled"]), ("S5", s["s5_enabled"])) if on
     )
     if s["regime_filter"] == "strict":
         label += " · sıkı rejim"

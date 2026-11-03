@@ -38,7 +38,7 @@ def side_allowed(strategy: str, side: str, settings: StrategySettings) -> bool:
     return allowed == "both" or allowed == side.lower()
 
 
-TREND_STRATEGIES = ("S1", "S2", "S4")
+TREND_STRATEGIES = ("S1", "S2", "S4", "S5")
 
 
 def passes_filters(sig: Signal, settings: StrategySettings, regime: str, funding_rate: float) -> bool:

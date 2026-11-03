@@ -30,6 +30,7 @@ from ..strategies.mean_reversion import MeanReversion
 from ..strategies.rs_rotation import RSRotation
 from ..strategies.scorer import estimate
 from ..strategies.trend_breakout import TrendBreakout
+from ..strategies.patterns import ChartPatterns
 from ..strategies.trend_follow import TrendFollow
 from ..util import DAY_MS, utc_week_start
 from .data import BacktestCancelled, HistoryData
@@ -58,6 +59,7 @@ class BacktestConfig:
     strategies: StrategySettings
     scanner: ScannerSettings
     s4: bool = False
+    s5: bool = False
 
 
 class SliceBuffer:
@@ -159,6 +161,7 @@ class Backtester:
         self.rm = RiskManager(SimpleNamespace(risk=cfg.risk), None)  # type: ignore[arg-type]
         self.regime = RegimeDetector()
         self.s1, self.s2, self.s3, self.s4 = TrendBreakout(), RSRotation(), MeanReversion(), TrendFollow()
+        self.s5 = ChartPatterns()
         self.positions: dict[str, SimPos] = {}
         self.pending: dict[str, dict] = {}
         self.trades: list[dict] = []
@@ -552,6 +555,11 @@ class Backtester:
             if cfg.s4 and close_t % H4 == 0:
                 for s in bars_now:
                     sig = self.s4.evaluate(s, ctx)
+                    if sig:
+                        found.append(sig)
+            if cfg.s5 and hour_close:
+                for s in bars_now:
+                    sig = self.s5.evaluate(s, ctx)
                     if sig:
                         found.append(sig)
             for s in bars_now:

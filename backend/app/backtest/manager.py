@@ -105,6 +105,7 @@ class BacktestManager:
             "s2": bool(st.get("s2", cur.s2_enabled)),
             "s3": bool(st.get("s3", cur.s3_enabled)),
             "s4": bool(st.get("s4", cur.s4_enabled)),
+            "s5": bool(st.get("s5", cur.s5_enabled)),
         }
         if not any(strategies.values()):
             raise ValueError("En az bir strateji seçilmeli")
@@ -194,11 +195,12 @@ class BacktestManager:
             strat = store.strategies.model_copy(update={
                 "s1_enabled": cfg["strategies"]["s1"], "s2_enabled": cfg["strategies"]["s2"], "s3_enabled": cfg["strategies"]["s3"],
                 "s4_enabled": cfg["strategies"].get("s4", False),
+                "s5_enabled": cfg["strategies"].get("s5", False),
             })
             bt_cfg = BacktestConfig(
                 symbols=cfg["symbols"], start_ms=start, end_ms=end, initial_equity=cfg["initial_equity"],
                 s1=cfg["strategies"]["s1"], s2=cfg["strategies"]["s2"], s3=cfg["strategies"]["s3"],
-                s4=cfg["strategies"].get("s4", False),
+                s4=cfg["strategies"].get("s4", False), s5=cfg["strategies"].get("s5", False),
                 slippage_bps=cfg["slippage_bps"], taker_fee=cfg["taker_fee"], maker_fee=cfg["maker_fee"],
                 risk=store.risk.model_copy(), strategies=strat, scanner=store.scanner.model_copy(),
             )

@@ -438,6 +438,7 @@ Arama iki aşamalıdır: (1) yapı taraması — 10 strateji seti × {iki yön, 
 
 Yeni strateji ayarları:
 - `s4_enabled`, `s4_donchian` (10–120, 4 saatlik mum), `s4_atr_mult` (1–6): S4 4 saatlik trend takibi, 4 saatlik kapanışlarda değerlendirilir.
+- `s5_enabled`, `s5_pivot` (3–10), `s5_tol` (0,3–2,0 ATR), `s5_vol_z` (0–3), `s5_sides`: S5 grafik formasyonları (omuz-baş-omuz ve tersi, ikili tepe/dip, yükselen/alçalan üçgen), 1 saatlik kapanışlarda; pivotlar sağda k mum oluşunca kesinleşir, giriş taze kırılımda.
 - `regime_filter`: `normal | strict` — strict'te S1/S2/S4 yalnızca rejim yönünde, S3 yalnızca yatay rejimde işlem açar.
 - `funding_max` (0,0001–0,005): kendi yönümüze ödenen funding bunu aşarsa giriş yapılmaz.
 - `exit_profile`: `standard | runner | quick` — hedef merdiveni ve iz süren stop planı.
