@@ -73,7 +73,7 @@ EXIT_PROFILES = {
 def apply_exit_profile(sig: Signal, settings: StrategySettings) -> Signal:
     """Çıkış profilini sinyalin hedef/iz süren stop planına uygular (standard: dokunmaz)."""
     prof = EXIT_PROFILES.get(getattr(settings, "exit_profile", "standard"))
-    if prof is None or sig.strategy == "S3":  # ortalamaya dönüş kendi tek hedefini korur
+    if prof is None or sig.strategy in ("S3", "S6"):  # S3 tek hedefli; S6 kendi doğrulanmış çıkışını kullanır  # ortalamaya dönüş kendi tek hedefini korur
         return sig
     spec, trail_k, time_k = prof
     sgn = side_sign(sig.side)

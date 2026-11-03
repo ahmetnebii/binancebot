@@ -443,6 +443,21 @@ Yeni strateji ayarları:
 - `funding_max` (0,0001–0,005): kendi yönümüze ödenen funding bunu aşarsa giriş yapılmaz.
 - `exit_profile`: `standard | runner | quick` — hedef merdiveni ve iz süren stop planı.
 
+### Strateji Laboratuvarı (lab)
+
+Binlerce kuralı tarayan arama. Kural = zaman dilimi (15m/1h/4h) + giriş tetikleyicisi (11 tip: kanal kırılımı, EMA kesişimi, RSI dönüşü, Bollinger dönüş/kırılım, Keltner, MACD, momentum, trendde geri çekilme, sıkışma kırılımı, hacimli kırılım) + 0–2 filtre (trend, eğim, ADX trend/yatay, hacim, BTC trendi, sakin volatilite) + stop (k×ATR) + çıkış (sabit hedef ya da kısmi hedef + iz süren stop) + zaman stopu + yön.
+
+Süreç: dönem %60 eğitim / %20 doğrulama / %20 final sınavı. Keşif (%70 rastgele) + evrimsel iyileştirme (%30, en iyi 40 kuralın komşuları) eğitimde hızlı vektörel simülasyonla puanlanır (t-istatistiği − zaman tutarlılığı cezası − coin yaygınlığı cezası). En iyi 200 → doğrulamada kârlı olanlar → en iyi 8 finalist canlıyla aynı portföy simülatöründe (eğitim+doğrulama) → kazanan final sınavında bir kez test edilir. Şans çıtası √(2·ln N) altında kalan kurala en fazla "weak" denir. Bütçe: hizli 2.000, normal 10.000, derin 30.000, maksimum 100.000 kural.
+
+| Metot | Yol | Gövde | Yanıt |
+|---|---|---|---|
+| POST | `/api/backtest/lab` | `{days?: 90–365 (365), top_n?: 10–60 (30), budget?}` | `LabJob` (`kind: "lab"`, id `lab_…`) |
+| GET | `/api/backtest/lab/jobs` | — | `LabJob[]` |
+| GET | `/api/backtest/jobs/{id}` | — | `result: {verdict, verdict_text, period{start,split1,split2,end}, tested, luck_bar, shortlist, passed_oos, best{label, details, rule, is, oos, dev, final}, finalists[], leaderboard[], full, calibration, data_source, warnings}` |
+| POST | `/api/backtest/lab/{id}/apply` | — | Kural `strategies.lab_rule`'a yazılır, `lab_enabled=true`, S1–S5 kapatılır, kalibrasyon güncellenir |
+
+Kural canlıda S6 olarak çalışır (`strategies/lab_rules.py`); hızlı tarama, portföy simülasyonu ve canlı tarama aynı sinyal kodunu kullanır. S6 varsayılan EV eşiğinden ve çıkış profilinden muaftır (kendi doğrulanmış çıkışını kullanır).
+
 ### Ayarlar
 
 | Metot | Yol | Gövde | Yanıt |

@@ -468,7 +468,7 @@ export interface BacktestResult {
 
 export interface BacktestJob {
   id: string;
-  kind?: 'backtest' | 'optimize';
+  kind?: 'backtest' | 'optimize' | 'lab';
   created_at: number;
   finished_at: number | null;
   status: BacktestStatus;
@@ -547,6 +547,8 @@ export interface StrategySettings {
   s5_tol?: number;
   s5_vol_z?: number;
   s5_sides?: StrategySides;
+  lab_enabled?: boolean;
+  lab_rule?: Record<string, unknown> | null;
   regime_filter?: 'normal' | 'strict';
   funding_max?: number;
   exit_profile?: 'standard' | 'runner' | 'quick';
@@ -655,4 +657,53 @@ export interface OptimizeJob extends Omit<BacktestJob, 'result' | 'summary' | 'c
   config: { days: number; top_n: number; symbols: string[]; budget: string; candidates: number };
   summary: { verdict: OptimizeResult['verdict']; label: string | null; oos_expectancy_r: number | null; oos_profit_factor: number | null; oos_return_pct: number | null } | null;
   result?: OptimizeResult;
+}
+
+// --- Strateji Laboratuvarı -------------------------------------------------
+export interface LabStats {
+  trades: number;
+  expectancy_r: number | null;
+  profit_factor: number | null;
+  win_rate: number | null;
+  t_stat: number;
+  score?: number;
+  folds_pos?: number;
+  breadth?: number;
+  return_pct?: number;
+  max_drawdown_pct?: number;
+}
+
+export interface LabRow {
+  label: string;
+  details: string[];
+  rule: Record<string, unknown>;
+  is: LabStats;
+  oos: LabStats | null;
+  dev?: LabStats;
+  final?: LabStats | null;
+}
+
+export interface LabResult {
+  verdict: 'recommended' | 'weak' | 'none';
+  verdict_text: string;
+  period: { start: number; split1: number; split2: number; end: number };
+  tested: number;
+  luck_bar: number;
+  min_trades: number;
+  shortlist: number;
+  passed_oos: number;
+  best: LabRow | null;
+  finalists: { label: string; details: string[]; dev: LabStats }[];
+  leaderboard: LabRow[];
+  full: BacktestResult | null;
+  data_source: 'binance' | 'synthetic';
+  warnings: string[];
+}
+
+export interface LabJob extends Omit<BacktestJob, 'result' | 'summary' | 'config' | 'kind'> {
+  kind: 'lab';
+  applied_at?: number | null;
+  config: { days: number; top_n: number; symbols: string[]; budget: string; candidates: number };
+  summary: { verdict: LabResult['verdict']; label: string | null; tested: number } | null;
+  result?: LabResult;
 }

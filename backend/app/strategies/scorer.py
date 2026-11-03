@@ -21,6 +21,8 @@ PRIORS: dict[str, tuple[float, float, float]] = {
     "S5": (0.45, 1.8, 1.0),
     "M": (0.40, 2.0, 1.0),
 }
+# Laboratuvar kuralı kendi verisiyle doğrulandığı için varsayılan EV eşiğinden muaftır
+EV_EXEMPT = frozenset({"S6"})
 PRIOR_WEIGHT = 30
 MAX_CALIBRATION_WEIGHT = 150
 

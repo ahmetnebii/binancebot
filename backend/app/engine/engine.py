@@ -25,10 +25,11 @@ from ..risk.sizing import approx_liq_price, symbol_class
 from ..settings import SettingsStore
 from ..strategies.base import StrategyContext, apply_exit_profile, passes_filters
 from ..strategies.mean_reversion import MeanReversion
+from ..strategies.lab_rules import LabRule
 from ..strategies.patterns import ChartPatterns
 from ..strategies.trend_follow import TrendFollow, is_4h_close
 from ..strategies.rs_rotation import RSRotation
-from ..strategies.scorer import estimate
+from ..strategies.scorer import EV_EXEMPT, estimate
 from ..strategies.trend_breakout import TrendBreakout
 from ..util import floor_time, new_id, now_ms, tf_ms
 from .projection import build_projection
@@ -95,6 +96,7 @@ class Engine:
         self.s3 = MeanReversion()
         self.s4 = TrendFollow()
         self.s5 = ChartPatterns()
+        self.lab = LabRule()
         self.calibration: dict = {}
         self._last_report_day: Optional[int] = None
         self.scanner: dict = {"last_scan_at": None, "next_scan_at": None, "scanned_symbols": 0}
@@ -308,6 +310,11 @@ class Engine:
             hourly.append(self.s4)
         if tf == "1h" and self.store.strategies.s5_enabled:
             hourly.append(self.s5)
+        lab_rule = self.store.strategies.lab_rule if self.store.strategies.lab_enabled else None
+        if lab_rule:
+            ltf = lab_rule.get("tf")
+            if (ltf == tf) or (ltf == "4h" and tf == "1h" and is_4h_close(ctx.now)):
+                hourly.append(self.lab)
         for strat in hourly:
             for sym in universe:
                 if sym in self.store.scanner.blacklist:
@@ -399,7 +406,7 @@ class Engine:
         )
         if sig.strategy in self.calibration:
             sig.features["calibrated"] = 1.0
-        if sig.ev_r < self.store.risk.min_ev_r:
+        if sig.ev_r < self.store.risk.min_ev_r and sig.strategy not in EV_EXEMPT:
             sig.warnings.append("Tahmini beklenti eşiğin altında: otomatik mod bu fırsatı işlemez")
         sig.price = self.market.price(sig.symbol)
         sig.plan = await self._plan(sig.symbol, sig.side, sig.price or sig.entry, sig.stop, sig.score, "auto")
@@ -467,7 +474,7 @@ class Engine:
     async def _check_strategy_health(self, strategy: str) -> None:
         """Son N işlemin beklentisi eşiğin altına düşen stratejiyi otomatik kapatır."""
         cfg = self.store.strategies
-        key = {"S1": "s1_enabled", "S2": "s2_enabled", "S3": "s3_enabled", "S4": "s4_enabled", "S5": "s5_enabled"}.get(strategy)
+        key = {"S1": "s1_enabled", "S2": "s2_enabled", "S3": "s3_enabled", "S4": "s4_enabled", "S5": "s5_enabled", "S6": "lab_enabled"}.get(strategy)
         if not cfg.health_monitor or key is None or not getattr(cfg, key):
             return
         closed = [
@@ -533,7 +540,7 @@ class Engine:
             return False, "broker hazır değil"
         if sig.plan is None or not sig.plan.ok:
             return False, sig.plan.reason if sig.plan else "plan yok"
-        if sig.ev_r < self.store.risk.min_ev_r:
+        if sig.ev_r < self.store.risk.min_ev_r and sig.strategy not in EV_EXEMPT:
             return False, "beklenti eşiğin altında"
         if self.regime.name == "CHAOS":
             return False, "aşırı oynaklık rejimi"

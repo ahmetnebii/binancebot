@@ -162,6 +162,9 @@ class StrategySettings(BaseModel):
     s5_tol: float = Field(1.0, ge=0.3, le=2.0)
     s5_vol_z: float = Field(1.0, ge=0.0, le=3.0)
     s5_sides: Literal["both", "long", "short"] = "both"
+    # S6: Strateji Laboratuvarı'nın bulduğu kural (laboratuvar "uygula" ile yazar)
+    lab_enabled: bool = False
+    lab_rule: Optional[dict[str, Any]] = None
     # Ortak filtreler (tüm stratejilere uygulanır)
     regime_filter: Literal["normal", "strict"] = "normal"
     funding_max: float = Field(0.0005, ge=0.0001, le=0.005)

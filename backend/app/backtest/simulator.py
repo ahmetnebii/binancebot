@@ -28,8 +28,9 @@ from ..settings import RiskSettings, ScannerSettings, StrategySettings
 from ..strategies.base import StrategyContext, apply_exit_profile, passes_filters
 from ..strategies.mean_reversion import MeanReversion
 from ..strategies.rs_rotation import RSRotation
-from ..strategies.scorer import estimate
+from ..strategies.scorer import EV_EXEMPT, estimate
 from ..strategies.trend_breakout import TrendBreakout
+from ..strategies.lab_rules import LabRule
 from ..strategies.patterns import ChartPatterns
 from ..strategies.trend_follow import TrendFollow
 from ..util import DAY_MS, utc_week_start
@@ -40,7 +41,7 @@ HOUR = 3_600_000
 H4 = 4 * HOUR
 FUNDING_DEFAULT = 0.0001
 MAX_BARS_15M = 500
-MAX_BARS_1H = 400
+MAX_BARS_1H = 500
 
 
 @dataclass
@@ -60,6 +61,7 @@ class BacktestConfig:
     scanner: ScannerSettings
     s4: bool = False
     s5: bool = False
+    lab: bool = False
 
 
 class SliceBuffer:
@@ -162,6 +164,7 @@ class Backtester:
         self.regime = RegimeDetector()
         self.s1, self.s2, self.s3, self.s4 = TrendBreakout(), RSRotation(), MeanReversion(), TrendFollow()
         self.s5 = ChartPatterns()
+        self.lab = LabRule()
         self.positions: dict[str, SimPos] = {}
         self.pending: dict[str, dict] = {}
         self.trades: list[dict] = []
@@ -405,7 +408,7 @@ class Backtester:
         apply_exit_profile(sig, self.cfg.strategies)
         _, ev = estimate(sig, self.cfg.taker_fee, self.slip, mi.funding_rate if mi else 0.0)
         sig.ev_r = ev
-        if ev < self.cfg.risk.min_ev_r:
+        if ev < self.cfg.risk.min_ev_r and sig.strategy not in EV_EXEMPT:
             self.skipped["ev"] += 1
             return
         eq = self._equity()
@@ -557,6 +560,14 @@ class Backtester:
                     sig = self.s4.evaluate(s, ctx)
                     if sig:
                         found.append(sig)
+            lab_rule = cfg.strategies.lab_rule if cfg.lab else None
+            if lab_rule:
+                ltf = lab_rule.get("tf")
+                if ltf == "15m" or (ltf == "1h" and hour_close) or (ltf == "4h" and close_t % H4 == 0):
+                    for s in bars_now:
+                        sig = self.lab.evaluate(s, ctx)
+                        if sig:
+                            found.append(sig)
             if cfg.s5 and hour_close:
                 for s in bars_now:
                     sig = self.s5.evaluate(s, ctx)

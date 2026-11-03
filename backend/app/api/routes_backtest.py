@@ -85,6 +85,35 @@ async def optimize_apply(job_id: str, request: Request) -> dict:
         raise HTTPException(400, str(exc)) from exc
 
 
+class LabIn(BaseModel):
+    days: Optional[int] = Field(default=None, ge=90, le=365)
+    top_n: Optional[int] = Field(default=None, ge=10, le=60)
+    budget: Optional[str] = None
+
+
+@router.post("/lab")
+async def lab_run(body: LabIn, request: Request) -> dict:
+    try:
+        return await manager(request).run_lab_job(body.model_dump(exclude_none=True))
+    except BacktestBusy as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/lab/jobs")
+async def lab_jobs(request: Request) -> list[dict]:
+    return await manager(request).list("lab")
+
+
+@router.post("/lab/{job_id}/apply")
+async def lab_apply(job_id: str, request: Request) -> dict:
+    try:
+        return await manager(request).apply_lab(job_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @router.get("/jobs/{job_id}")
 async def job(job_id: str, request: Request) -> dict:
     j = await manager(request).get(job_id)

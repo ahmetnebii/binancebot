@@ -124,7 +124,11 @@ export const useApp = create<AppState>((set, get) => ({
   },
   setMobileNav: (mobileNavOpen) => set({ mobileNavOpen }),
   setBacktestJobs: (list) => {
+    // Yalnızca normal backtest işlerini yeniler; optimize/laboratuvar işleri korunur
     const map: Record<string, BacktestJob> = {};
+    for (const j of Object.values(get().backtestJobs)) {
+      if (j.kind === 'optimize' || j.kind === 'lab') map[j.id] = j;
+    }
     for (const j of list) {
       const { result: _drop, ...light } = j;
       void _drop;
