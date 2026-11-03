@@ -7,6 +7,22 @@ Binance USDⓈ-M Futures için **risk öncelikli, tam otomatik** işlem sistemi 
 
 📘 Tasarım ve gerekçeler: [YAPIM_KILAVUZU.md](YAPIM_KILAVUZU.md) · 🔌 API: [docs/API.md](docs/API.md)
 
+## Ekran görüntüleri
+
+> Görüntüler **sentetik geliştirme verisiyle** alınmıştır (üstteki sarı uyarı şeridi). Fiyatlar ve sinyaller gerçek piyasa değildir.
+
+**Pozisyon detayı:** SL/TP bölgeleri, likidasyon çizgisi, volatilite konisi ve ivme yolu (tahmini ilerleme), hedef olasılıkları
+
+![Pozisyon detayı](docs/screenshots/pozisyon-detayi.png)
+
+**Panel**
+
+![Panel](docs/screenshots/panel.png)
+
+**Fırsatlar:** Otomatik mod kapalıyken fırsatlar burada onayını bekler
+
+![Fırsatlar](docs/screenshots/firsatlar.png)
+
 ## Neler yapar?
 
 - **Tüm USDT perpetual kontratları** gerçek zamanlı tarar. Binance'in 2026 WebSocket yapısını (`/market`, `/public`, `/private`) kullanır.

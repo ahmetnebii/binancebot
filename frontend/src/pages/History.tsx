@@ -11,7 +11,7 @@ function StatTile({ label, value, cls, sub }: { label: string; value: string; cl
   return (
     <div className="min-w-0 px-4 py-3.5">
       <div className="label">{label}</div>
-      <div className={clsx('num mt-1 truncate text-[19px] font-semibold tracking-tight text-fg', cls)}>{value}</div>
+      <div className={clsx('num mt-1 truncate text-[19px] font-semibold tracking-tight', cls ?? 'text-fg')}>{value}</div>
       {sub && <div className="num mt-0.5 text-[11px] text-subtle">{sub}</div>}
     </div>
   );
@@ -36,7 +36,7 @@ export function History() {
             <StatTile label="Profit factor" value={s.profit_factor != null ? fmtNum(s.profit_factor, 2) : '—'} cls={s.profit_factor != null && s.profit_factor < 1 ? 'text-down' : undefined} />
             <StatTile label="Beklenti" value={fmtR(s.expectancy_r)} cls={pnlClass(s.expectancy_r)} sub="işlem başına" />
             <StatTile label="Toplam K/Z" value={fmtUsd(s.total_pnl, { sign: true })} cls={pnlClass(s.total_pnl)} sub="USDT" />
-            <StatTile label="Ort. kazanç / kayıp" value={`${fmtR(s.avg_win_r)} / ${fmtR(s.avg_loss_r)}`} />
+            <StatTile label="Ort. kazanç" value={fmtR(s.avg_win_r)} cls={s.avg_win_r != null ? 'text-up' : undefined} sub={`ort. kayıp ${fmtR(s.avg_loss_r)}`} />
             <StatTile label="En iyi işlem" value={fmtR(s.best_r)} cls={pnlClass(s.best_r)} />
             <StatTile label="En kötü işlem" value={fmtR(s.worst_r)} cls={pnlClass(s.worst_r)} />
           </div>

@@ -77,6 +77,7 @@ export const MULTIPLIER_LABELS: Record<string, string> = {
   kalite: 'Kalite',
   drawdown: 'Düşüş',
   dusus: 'Düşüş',
+  'düşüş': 'Düşüş',
   streak: 'Kayıp serisi',
   seri: 'Kayıp serisi',
   regime: 'Rejim',

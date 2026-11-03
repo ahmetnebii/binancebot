@@ -54,17 +54,20 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
 function pill(
   ctx: CanvasRenderingContext2D,
   text: string,
-  x: number,
+  xIn: number,
   y: number,
   pr: number,
   fg: string,
   bg: string,
   border: string,
+  anchor: 'left' | 'right' = 'left',
 ) {
   ctx.font = `600 ${11 * pr}px "Inter Variable", Inter, system-ui, sans-serif`;
   const padX = 6 * pr;
   const h = 18 * pr;
   const w = ctx.measureText(text).width + padX * 2;
+  // anchor=right: x, etiketin sağ kenarıdır
+  const x = anchor === 'right' ? xIn - w : xIn;
   roundRect(ctx, x, y - h / 2, w, h, 4 * pr);
   ctx.fillStyle = bg;
   ctx.fill();
@@ -285,7 +288,8 @@ class ConeRenderer implements ISeriesPrimitivePaneRenderer {
         ctx.lineWidth = 2 * hr;
         ctx.strokeStyle = '#0A0D12';
         ctx.stroke();
-        if (tgt.label) pill(ctx, tgt.label, x + 9 * hr, y, hr, '#C4B5FD', 'rgba(10,13,18,0.88)', 'rgba(167,139,250,0.5)');
+        // Etiket elmasın soluna çizilir; sağdaki fiyat çizgisi başlıklarıyla çakışmasın
+        if (tgt.label) pill(ctx, tgt.label, x - 9 * hr, y - 16 * vr, hr, '#C4B5FD', 'rgba(10,13,18,0.9)', 'rgba(167,139,250,0.55)', 'right');
       }
     });
   }

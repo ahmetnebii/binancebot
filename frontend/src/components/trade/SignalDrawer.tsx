@@ -151,6 +151,10 @@ export function SignalDrawer({
   const status = useApp((s) => s.status);
   const bounds = useRiskBounds();
   const [riskPct, setRiskPct] = useState<number | null>(null);
+  // Risk yalnızca kullanıcı kaydırıcıyı değiştirirse gönderilir; aksi hâlde sistem riski
+  // (taban × kalite/düşüş/seri/rejim çarpanları) uygulanır.
+  const [riskTouched, setRiskTouched] = useState(false);
+  const [systemRisk, setSystemRisk] = useState<number | null>(null);
   const [manualLev, setManualLev] = useState(false);
   const [lev, setLev] = useState<number | null>(null);
   const [preview, setPreview] = useState<OrderPreview | null>(null);
@@ -160,7 +164,9 @@ export function SignalDrawer({
 
   useEffect(() => {
     const planRisk = signal?.plan?.ok && signal.plan.risk_pct > 0 ? signal.plan.risk_pct : null;
-    setRiskPct(planRisk ?? status?.limits.base_risk_pct ?? null);
+    setRiskPct(null);
+    setRiskTouched(false);
+    setSystemRisk(planRisk);
     setManualLev(false);
     setLev(null);
     setPreview(null);
@@ -180,19 +186,24 @@ export function SignalDrawer({
     if (!signal || signal.status !== 'ACTIVE') return;
     let alive = true;
     setPreviewLoading(true);
+    const sendRisk = riskTouched && dRisk && dRisk > 0 ? dRisk : undefined;
     api
       .signalPreview(signal.id, {
-        risk_pct: dRisk && dRisk > 0 ? dRisk : undefined,
+        risk_pct: sendRisk,
         leverage: dLev && dLev >= 1 ? dLev : undefined,
       })
-      .then((p) => alive && setPreview(p))
+      .then((p) => {
+        if (!alive) return;
+        setPreview(p);
+        if (sendRisk === undefined && p.plan.ok && p.plan.risk_pct > 0) setSystemRisk(p.plan.risk_pct);
+      })
       .catch(() => alive && setPreview(null))
       .finally(() => alive && setPreviewLoading(false));
     return () => {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [signal?.id, signal?.status, dRisk, dLev, tick]);
+  }, [signal?.id, signal?.status, dRisk, dLev, tick, riskTouched]);
 
   const overlay = useMemo(() => (signal ? signalOverlay(signal) : null), [signal?.id, signal?.entry, signal?.stop, signal?.plan?.liq_price]); // eslint-disable-line react-hooks/exhaustive-deps
   const autoConfirmedRef = useRef<string | null>(null);
@@ -213,6 +224,7 @@ export function SignalDrawer({
   const s = signal;
   const active = s.status === 'ACTIVE';
   const plan = preview?.plan ?? s.plan;
+  const shownRisk = riskTouched && riskPct != null ? riskPct : (systemRisk ?? bounds.base);
 
   const execute = async () => {
     const p = plan;
@@ -254,7 +266,10 @@ export function SignalDrawer({
     setBusy(true);
     try {
       const pos = await withToast(
-        api.executeSignal(s.id, { risk_pct: riskPct && riskPct > 0 ? riskPct : undefined, leverage: manualLev && lev && lev >= 1 ? lev : undefined }),
+        api.executeSignal(s.id, {
+          risk_pct: riskTouched && riskPct && riskPct > 0 ? riskPct : undefined,
+          leverage: manualLev && lev && lev >= 1 ? lev : undefined,
+        }),
         'İşleme girilemedi',
       );
       useApp.getState().upsertPosition(pos); // "Pozisyon açıldı" bildirimi sunucudan gelir
@@ -454,20 +469,31 @@ export function SignalDrawer({
                         İşlem riski
                         <InfoTip>Stop tetiklenirse kaybedilecek tutarın özsermayeye oranı. Büyüklük ve kaldıraç buna göre hesaplanır.</InfoTip>
                       </span>
-                      <span className="num text-[13px] font-semibold text-fg">{fmtPct(riskPct ?? 0)}</span>
+                      <span className="num text-[13px] font-semibold text-fg">{fmtPct(shownRisk)}</span>
                     </div>
                     <Slider
-                      value={riskPct ?? bounds.base}
+                      value={shownRisk}
                       min={bounds.min}
                       max={bounds.max}
                       step={0.0005}
-                      onChange={setRiskPct}
-                      tone={(riskPct ?? 0) > 0.015 ? 'down' : (riskPct ?? 0) > 0.01 ? 'warn' : 'accent'}
+                      onChange={(v) => {
+                        setRiskTouched(true);
+                        setRiskPct(v);
+                      }}
+                      tone={shownRisk > 0.015 ? 'down' : shownRisk > 0.01 ? 'warn' : 'accent'}
                     />
                     <div className="num mt-1 flex justify-between text-[10.5px] text-subtle">
                       <span>{fmtPct(bounds.min)}</span>
-                      <button type="button" className="hover:text-fg" onClick={() => setRiskPct(bounds.base)}>
-                        sistem: {fmtPct(bounds.base)}
+                      <button
+                        type="button"
+                        className={riskTouched ? 'text-accent hover:text-fg' : 'hover:text-fg'}
+                        title="Sistem riski: taban risk × kalite, düşüş, kayıp serisi ve rejim çarpanları"
+                        onClick={() => {
+                          setRiskTouched(false);
+                          setRiskPct(null);
+                        }}
+                      >
+                        {riskTouched ? 'sisteme dön' : 'sistem'}: {fmtPct(systemRisk ?? bounds.base)}
                       </button>
                       <span>{fmtPct(bounds.max)}</span>
                     </div>

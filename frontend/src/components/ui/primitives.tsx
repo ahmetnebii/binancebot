@@ -354,7 +354,7 @@ export function Stat({
         {label}
         {hint}
       </div>
-      <div className={clsx('num mt-1 truncate text-[15px] font-medium text-fg', valueClassName)}>{value}</div>
+      <div className={clsx('num mt-1 truncate text-[15px] font-medium', valueClassName ?? 'text-fg')}>{value}</div>
       {sub && <div className="mt-0.5 truncate text-[11.5px] text-muted">{sub}</div>}
     </div>
   );

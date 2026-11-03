@@ -12,6 +12,13 @@ Geliştirmede Vite dev sunucusu `/api` ve `/ws` isteklerini `http://127.0.0.1:80
 - **Zaman birimleri:**
   - Tüm `*_at`, `ts`, `server_time` alanları **milisaniyedir** (Unix ms).
   - Grafik verisinde (`Candle.time`, `cone[].time`, `momentum_path[].time`, equity `time`) birim **saniyedir** (lightweight-charts `UTCTimestamp`).
+- **Oran alanlarının birimi:**
+
+  | Birim | Alanlar |
+  |---|---|
+  | **Kesir** (0.0075 = %0,75) | `SizingPlan.risk_pct`; tüm ayar oranları (`base_risk_pct`, `daily_loss_pct`, `max_total_margin_pct`…); `Signal.win_prob`; `TakeProfit.fraction`; `Regime.breadth`, `Regime.vol_pct`; `stats.win_rate` |
+  | **Yüzde** (1.25 = %1,25) | `Position.roe_pct`, `stop_distance_pct`, `liq_distance_pct`; `SizingPlan.stop_distance_pct`, `liq_distance_pct`; `Equity.margin_used_pct`, `open_risk_pct`, `day_pnl_pct`, `drawdown_pct`; `/market/symbols` → `change_pct`; `Signal.features.atr_pct` |
+
 - **Ortamlar:**
   - `paper`: Simülasyon. Gerçek piyasa verisi kullanılır, emirler sanaldır.
   - `testnet`: Binance demo/testnet.

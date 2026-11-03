@@ -222,7 +222,12 @@ export function SignalRow({ signal: s, onOpen }: { signal: Signal; onOpen: () =>
       </div>
       <div className="text-right">
         <div className={clsx('num text-[12.5px] font-semibold', s.ev_r >= 0 ? 'text-up' : 'text-down')}>{fmtR(s.ev_r)}</div>
-        <div className="num text-[11px] text-subtle">{s.plan?.ok ? `${s.plan.leverage}x · ${fmtUsd(s.plan.notional, { digits: 0 })}` : 'plan yok'}</div>
+        <div
+          className={clsx('num text-[11px]', s.plan && !s.plan.ok ? 'text-warn' : 'text-subtle')}
+          title={s.plan && !s.plan.ok ? s.plan.reason : undefined}
+        >
+          {s.plan?.ok ? `${s.plan.leverage}x · ${fmtUsd(s.plan.notional, { digits: 0 })}` : s.plan ? 'şu an uygun değil' : 'hesaplanıyor'}
+        </div>
       </div>
       <Countdown until={s.expires_at} className="w-[52px] justify-end" />
     </button>

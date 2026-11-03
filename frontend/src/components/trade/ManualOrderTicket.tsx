@@ -128,6 +128,10 @@ export function ManualOrderTicket({
   const [useDefaultTps, setUseDefaultTps] = useState(true);
   const [tps, setTps] = useState<TpRow[]>(DEFAULT_TPS);
   const [riskPct, setRiskPct] = useState<number | null>(null);
+  // Risk yalnızca kullanıcı kaydırıcıyı değiştirirse sunucuya gönderilir; aksi hâlde
+  // sistem riski (taban × düşüş/seri çarpanları) uygulanır.
+  const [riskTouched, setRiskTouched] = useState(false);
+  const [systemRisk, setSystemRisk] = useState<number | null>(null);
   const [manualLev, setManualLev] = useState(false);
   const [lev, setLev] = useState<number | null>(null);
   const [preview, setPreview] = useState<OrderPreview | null>(null);
@@ -158,7 +162,9 @@ export function ManualOrderTicket({
 
   useEffect(() => {
     if (open) {
-      setRiskPct(bounds.base);
+      setRiskPct(null);
+      setRiskTouched(false);
+      setSystemRisk(null);
       setPreview(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -180,7 +186,7 @@ export function ManualOrderTicket({
           side,
           stop_price: stop,
           take_profits: useDefaultTps ? undefined : tps.map((t) => ({ r: t.r, fraction: t.fraction })),
-          risk_pct: riskPct ?? undefined,
+          risk_pct: riskTouched && riskPct ? riskPct : undefined,
           leverage: manualLev && lev ? lev : undefined,
         }
       : null;
@@ -197,6 +203,7 @@ export function ManualOrderTicket({
         if (!alive) return;
         setPreview(p);
         setPreviewErr(null);
+        if (!dOrder.risk_pct && p.plan.ok && p.plan.risk_pct > 0) setSystemRisk(p.plan.risk_pct);
       })
       .catch((e: unknown) => {
         if (!alive) return;
@@ -211,6 +218,7 @@ export function ManualOrderTicket({
   }, [open, orderKey]);
 
   const stopInvalid = !!(price && stop && (side === 'LONG' ? stop >= price : stop <= price));
+  const shownRisk = riskTouched && riskPct != null ? riskPct : (systemRisk ?? bounds.base);
 
   const overlay: ChartOverlay | null = useMemo(() => {
     if (!price || !stop || stopInvalid) return null;
@@ -410,20 +418,31 @@ export function ManualOrderTicket({
                   İşlem riski
                   <InfoTip>Stop tetiklenirse kaybedilecek tutarın özsermayeye oranı.</InfoTip>
                 </span>
-                <span className="num text-[13px] font-semibold text-fg">{fmtPct(riskPct ?? bounds.base)}</span>
+                <span className="num text-[13px] font-semibold text-fg">{fmtPct(shownRisk)}</span>
               </div>
               <Slider
-                value={riskPct ?? bounds.base}
+                value={shownRisk}
                 min={bounds.min}
                 max={bounds.max}
                 step={0.0005}
-                onChange={setRiskPct}
-                tone={(riskPct ?? 0) > 0.015 ? 'down' : (riskPct ?? 0) > 0.01 ? 'warn' : 'accent'}
+                onChange={(v) => {
+                  setRiskTouched(true);
+                  setRiskPct(v);
+                }}
+                tone={shownRisk > 0.015 ? 'down' : shownRisk > 0.01 ? 'warn' : 'accent'}
               />
               <div className="num mt-1 flex justify-between text-[10.5px] text-subtle">
                 <span>{fmtPct(bounds.min)}</span>
-                <button type="button" className="hover:text-fg" onClick={() => setRiskPct(bounds.base)}>
-                  sistem: {fmtPct(bounds.base)}
+                <button
+                  type="button"
+                  className={riskTouched ? 'text-accent hover:text-fg' : 'hover:text-fg'}
+                  title="Sistem riski: taban risk × düşüş ve kayıp serisi çarpanları"
+                  onClick={() => {
+                    setRiskTouched(false);
+                    setRiskPct(null);
+                  }}
+                >
+                  {riskTouched ? 'sisteme dön' : 'sistem'}: {fmtPct(systemRisk ?? bounds.base)}
                 </button>
                 <span>{fmtPct(bounds.max)}</span>
               </div>

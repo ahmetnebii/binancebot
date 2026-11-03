@@ -1038,6 +1038,8 @@ class Engine:
                     elif now - s.created_at > 24 * 3600_000:
                         self.signals.pop(s.id, None)
                 n += 1
+                if n % 3 == 0:
+                    await self._refresh_signal_plans()
                 if n % 360 == 0:
                     await self.db.prune_events()
                 if not self._breakers:
@@ -1046,6 +1048,52 @@ class Engine:
                 raise
             except Exception:
                 log.exception("Bakım döngüsü hatası")
+
+    async def _refresh_signal_plans(self) -> None:
+        """Aktif fırsatların planını güncel fiyat ve portföy durumuyla yeniden hesaplar.
+
+        Otomatik mod açıkken limit vb. nedeniyle bekletilmiş bir fırsat uygun hâle
+        gelirse (ve fiyat hâlâ sinyal seviyesine yakınsa) otomatik olarak işlenir.
+        """
+        if self.broker is None:
+            return
+        for s in list(self.signals.values()):
+            if s.status != "ACTIVE":
+                continue
+            price = self.market.price(s.symbol)
+            if not price:
+                continue
+            sgn = side_sign(s.side)
+            risk_unit = abs(s.entry - s.stop)
+            drift_r = sgn * (price - s.entry) / risk_unit if risk_unit > 0 else 0.0
+            if sgn * (price - s.stop) <= 0:
+                plan = SizingPlan(ok=False, reason="Fiyat stop seviyesini geçti; fırsat geçersiz")
+            else:
+                try:
+                    plan = await self._plan(s.symbol, s.side, price, s.stop, s.score, "auto")
+                except Exception:
+                    continue
+                if plan.ok and drift_r > self.store.risk.max_entry_drift_r:
+                    plan.ok = False
+                    plan.reason = f"Fiyat sinyal seviyesinden {drift_r:.2f}R uzaklaştı; kovalanmıyor"
+            old = s.plan
+            changed = (
+                old is None or old.ok != plan.ok or old.reason != plan.reason or old.leverage != plan.leverage
+                or abs(old.notional - plan.notional) > 0.02 * max(old.notional, 1.0)
+            )
+            if changed:
+                s.plan = plan
+                self.bus.publish("signal", s.model_dump(mode="json"))
+            if (
+                plan.ok and self.store.runtime.auto_mode
+                and s.status_note.startswith("Otomatik mod işlemedi")
+                and self._auto_allowed(s)[0]
+            ):
+                try:
+                    await self.execute_signal(s.id, source="auto")
+                except EngineError as exc:
+                    s.status_note = f"Otomatik işlenemedi: {exc}"
+                    await self._save_signal(s)
 
     async def _reconcile_loop(self) -> None:
         while True:
