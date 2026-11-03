@@ -97,15 +97,19 @@ cd frontend && npm ci && npm run build && cd ..
 cd backend && ../.venv/bin/python -m app
 ```
 
-Windows (PowerShell):
+Windows (PowerShell). Komutları **tek tek** çalıştır; Windows PowerShell `&&` desteklemez:
 
 ```powershell
 git clone https://github.com/ahmetnebii/binancebot.git
 cd binancebot
+py --version                      # 3.11 veya üstü olmalı
 py -m venv .venv
-.venv\Scripts\pip install -r backend\requirements.txt
-cd frontend; npm ci; npm run build; cd ..
-cd backend; ..\.venv\Scripts\python -m app
+.venv\Scripts\python -m pip install -r backend\requirements.txt
+cd frontend
+npm ci                            # "running scripts is disabled" hatası alırsan: npm.cmd ci
+npm run build                     # aynı durumda: npm.cmd run build
+cd ..\backend
+..\.venv\Scripts\python -m app
 ```
 
 Sonra tarayıcıda **http://localhost:8000** adresini aç. Port doluysa `--port 8080` ekle.
