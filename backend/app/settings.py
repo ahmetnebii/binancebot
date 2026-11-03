@@ -148,6 +148,9 @@ class StrategySettings(BaseModel):
     health_monitor: bool = True
     health_min_trades: int = Field(20, ge=10, le=100)
     health_min_expectancy_r: float = Field(-0.15, ge=-1.0, le=0.0)
+    s1_sides: Literal["both", "long", "short"] = "both"
+    s2_sides: Literal["both", "long", "short"] = "both"
+    s3_sides: Literal["both", "long", "short"] = "both"
 
 
 class PaperSettings(BaseModel):

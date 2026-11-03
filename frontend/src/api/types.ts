@@ -468,6 +468,7 @@ export interface BacktestResult {
 
 export interface BacktestJob {
   id: string;
+  kind?: 'backtest' | 'optimize';
   created_at: number;
   finished_at: number | null;
   status: BacktestStatus;
@@ -523,6 +524,8 @@ export interface ScannerSettings {
   signal_ttl_min: number;
 }
 
+export type StrategySides = 'both' | 'long' | 'short';
+
 export interface StrategySettings {
   s1_enabled: boolean;
   s2_enabled: boolean;
@@ -532,6 +535,9 @@ export interface StrategySettings {
   s2_top_n: number;
   // Tur 2 eklemeleri (eski sunucularda olmayabilir)
   s3_enabled?: boolean;
+  s1_sides?: StrategySides;
+  s2_sides?: StrategySides;
+  s3_sides?: StrategySides;
   s3_bb_k?: number;
   s3_rsi?: number;
   oi_confirmation?: boolean;
@@ -593,3 +599,48 @@ export type WsMessage =
   | { type: 'kline'; data: { symbol: string; interval: string; candle: Candle } }
   | { type: 'toast'; data: ToastMsg }
   | { type: 'backtest'; data: BacktestJob };
+
+
+// --- Otomatik optimizasyon --------------------------------------------------
+export interface OptimizeEval {
+  trades: number;
+  win_rate: number | null;
+  profit_factor: number | null;
+  expectancy_r: number | null;
+  t_stat: number;
+  max_drawdown_pct: number;
+  return_pct: number;
+}
+
+export interface OptimizeRow {
+  rank?: number;
+  label: string;
+  details: string[];
+  min_ev_r: number;
+  params: { strategies: Record<string, unknown>; min_ev_r: number };
+  is: OptimizeEval;
+  oos: OptimizeEval;
+}
+
+export interface OptimizeResult {
+  verdict: 'recommended' | 'weak' | 'none';
+  verdict_text: string;
+  period: { start: number; split: number; end: number };
+  candidates_tested: number;
+  min_trades: number;
+  best: OptimizeRow | null;
+  baseline: OptimizeRow | null;
+  leaderboard: OptimizeRow[];
+  full: BacktestResult | null;
+  calibration: Record<string, unknown>;
+  data_source: 'binance' | 'synthetic';
+  warnings: string[];
+}
+
+export interface OptimizeJob extends Omit<BacktestJob, 'result' | 'summary' | 'config' | 'kind'> {
+  kind: 'optimize';
+  applied_at?: number | null;
+  config: { days: number; top_n: number; symbols: string[]; budget: string; candidates: number };
+  summary: { verdict: OptimizeResult['verdict']; label: string | null; oos_expectancy_r: number | null; oos_profit_factor: number | null; oos_return_pct: number | null } | null;
+  result?: OptimizeResult;
+}

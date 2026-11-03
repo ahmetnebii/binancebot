@@ -2,6 +2,7 @@ import { toast, useApp } from '../store/app';
 import type {
   BacktestConfigIn,
   BacktestJob,
+  OptimizeJob,
   Calibration,
   Candle,
   EquityPoint,
@@ -155,6 +156,10 @@ export const api = {
   deleteBacktest: (id: string) => request<{ ok: boolean }>('DELETE', `/api/backtest/jobs/${encodeURIComponent(id)}`),
   applyCalibration: (id: string) => request<Calibration>('POST', `/api/backtest/jobs/${encodeURIComponent(id)}/apply-calibration`),
   calibration: () => request<Calibration>('GET', '/api/backtest/calibration'),
+  runOptimize: (cfg: { days?: number; top_n?: number; budget?: string }) => request<OptimizeJob>('POST', '/api/backtest/optimize', cfg),
+  optimizeJobs: () => request<OptimizeJob[]>('GET', '/api/backtest/optimize/jobs'),
+  optimizeJob: (id: string) => request<OptimizeJob>('GET', `/api/backtest/jobs/${encodeURIComponent(id)}`),
+  applyOptimize: (id: string) => request<{ ok: boolean; calibrated: boolean }>('POST', `/api/backtest/optimize/${encodeURIComponent(id)}/apply`),
   resetCalibration: () => request<Calibration>('DELETE', '/api/backtest/calibration'),
 
   // Ayarlar

@@ -420,6 +420,20 @@ Kalibrasyon uygulandığında fırsatların kazanma olasılığı ve beklenti (E
 
 **İşaret notu:** `calibration[*].avg_loss_r` kaybın **pozitif büyüklüğüdür** (ör. 0.94 = ortalama −0,94R); `summary.avg_loss_r` ve `by_strategy[].avg_loss_r` ise **negatif** R değeridir.
 
+### Otomatik ayar bulucu (optimize)
+
+Tek tuşla parametre araması. Dönem ikiye bölünür: ilk 2/3 **eğitim** (adaylar burada t-istatistiğine göre sıralanır), son 1/3 **doğrulama** (hiç görülmemiş veri; karar yalnızca burada verilir). En iyi 6 aday doğrulamada sınanır. Karar eşikleri: `recommended` ≥15 işlem, beklenti ≥0,10R, PF ≥1,3; `weak` ≥10 işlem, beklenti >0, PF >1; aksi `none`. Backtest ile aynı kuyruğu paylaşır (aynı anda tek iş).
+
+| Metot | Yol | Gövde | Yanıt |
+|---|---|---|---|
+| POST | `/api/backtest/optimize` | `{days?: 60–365 (180), top_n?: 5–80 (30), budget?: "hizli"\|"normal"\|"derin"}` | `OptimizeJob` (`kind: "optimize"`, id `opt_…`) |
+| GET | `/api/backtest/optimize/jobs` | — | `OptimizeJob[]` (sonuçsuz) |
+| GET | `/api/backtest/jobs/{id}` | — | Tam iş; `result: {verdict, verdict_text, period{start,split,end}, candidates_tested, best, baseline, leaderboard[], full, calibration, data_source, warnings}` |
+| POST | `/api/backtest/jobs/{id}/cancel` | — | İptal |
+| POST | `/api/backtest/optimize/{id}/apply` | — | `{ok, applied, calibrated}`; strateji ayarları + yön izinleri + `risk.min_ev_r` güncellenir, kalibrasyon yazılır, işe `applied_at` eklenir. `verdict: "none"` → 400 |
+
+Strateji ayarlarındaki yön izinleri: `s1_sides`, `s2_sides`, `s3_sides` ∈ `both | long | short` (canlı tarama ve backtest ikisi de uyar).
+
 ### Ayarlar
 
 | Metot | Yol | Gövde | Yanıt |

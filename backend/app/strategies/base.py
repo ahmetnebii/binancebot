@@ -32,6 +32,12 @@ class StrategyContext:
         return mi.funding_rate if mi else 0.0
 
 
+def side_allowed(strategy: str, side: str, settings: StrategySettings) -> bool:
+    """Strateji için izin verilen yön (both / long / short)."""
+    allowed = getattr(settings, f"{strategy.lower()}_sides", "both")
+    return allowed == "both" or allowed == side.lower()
+
+
 def clamp01(x: float) -> float:
     if x != x:  # NaN
         return 0.0

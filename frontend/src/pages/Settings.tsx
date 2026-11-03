@@ -28,10 +28,17 @@ import { loadSettings, setSettingsCache, useSettingsCache } from '../components/
 import { ChipsInput, Field, Input, NumberInput, Textarea, Toggle } from '../components/ui/form';
 import { InfoTip, useConfirm } from '../components/ui/overlay';
 import { Badge, Button, Card, Segmented, Skeleton } from '../components/ui/primitives';
+import type { StrategySides } from '../api/types';
 import { Tabs } from '../components/ui/viz';
 import { fmtCompact, fmtLev, fmtPct, fmtUsd } from '../lib/format';
 import { navigate } from '../lib/router';
 import { toast, useApp } from '../store/app';
+
+const SIDE_OPTIONS: { value: StrategySides; label: string }[] = [
+  { value: 'both', label: 'Long + Short' },
+  { value: 'long', label: 'Sadece Long' },
+  { value: 'short', label: 'Sadece Short' },
+];
 
 type TabKey = 'baglanti' | 'telegram' | 'risk' | 'tarama' | 'simulasyon' | 'guvenlik';
 
@@ -889,6 +896,15 @@ function ScannerTab({ s, onSaved }: { s: SettingsView; onSaved: (v: SettingsView
               }
               description="Üst zaman dilimi trendi yönünde, hacimle onaylanan Donchian kırılımları. Stop ATR tabanlı, hedef merdivenli."
             />
+            <div className="mt-3 flex items-center gap-2">
+              <span className="text-[11.5px] text-subtle">Yön</span>
+              <Segmented
+                size="xs"
+                value={st.s1_sides ?? 'both'}
+                onChange={(v) => setSt({ ...st, s1_sides: v })}
+                options={SIDE_OPTIONS}
+              />
+            </div>
             <div className="mt-4 grid grid-cols-3 gap-3">
               <Field label="Donchian penceresi">
                 <NumberInput value={st.s1_donchian} onChange={(v) => v !== null && setSt({ ...st, s1_donchian: Math.round(v) })} suffix="bar" min={10} max={200} decimals={0} disabled={!st.s1_enabled} />
@@ -912,6 +928,15 @@ function ScannerTab({ s, onSaved }: { s: SettingsView; onSaved: (v: SettingsView
               }
               description="BTC etkisinden arındırılmış, volatiliteye göre ölçeklenmiş momentumla en güçlü/zayıf coinler. Rejime göre long/short."
             />
+            <div className="mt-3 flex items-center gap-2">
+              <span className="text-[11.5px] text-subtle">Yön</span>
+              <Segmented
+                size="xs"
+                value={st.s2_sides ?? 'both'}
+                onChange={(v) => setSt({ ...st, s2_sides: v })}
+                options={SIDE_OPTIONS}
+              />
+            </div>
             <div className="mt-4 grid grid-cols-3 gap-3">
               <Field label="Seçilecek coin sayısı">
                 <NumberInput value={st.s2_top_n} onChange={(v) => v !== null && setSt({ ...st, s2_top_n: Math.round(v) })} min={1} max={20} decimals={0} disabled={!st.s2_enabled} />
@@ -929,6 +954,15 @@ function ScannerTab({ s, onSaved }: { s: SettingsView; onSaved: (v: SettingsView
               }
               description="Yalnızca yatay rejimde: Bollinger bandı dışına taşan ve RSI aşırılığı görülen fiyatın ortalamaya dönüşünü hedefler. Hedef kısa, stop dar."
             />
+            <div className="mt-3 flex items-center gap-2">
+              <span className="text-[11.5px] text-subtle">Yön</span>
+              <Segmented
+                size="xs"
+                value={st.s3_sides ?? 'both'}
+                onChange={(v) => setSt({ ...st, s3_sides: v })}
+                options={SIDE_OPTIONS}
+              />
+            </div>
             <div className="mt-3 flex items-start gap-2 rounded-lg border border-warn/25 bg-warn/[0.06] px-3 py-2 text-[11.5px] leading-relaxed text-warn">
               <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               <span>

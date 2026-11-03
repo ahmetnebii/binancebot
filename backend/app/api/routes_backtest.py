@@ -51,7 +51,36 @@ async def run(body: BacktestConfigIn, request: Request) -> dict:
 
 @router.get("/jobs")
 async def jobs(request: Request) -> list[dict]:
-    return await manager(request).list()
+    return await manager(request).list("backtest")
+
+
+class OptimizeIn(BaseModel):
+    days: Optional[int] = Field(default=None, ge=60, le=365)
+    top_n: Optional[int] = Field(default=None, ge=5, le=80)
+    budget: Optional[str] = None
+
+
+@router.post("/optimize")
+async def optimize_run(body: OptimizeIn, request: Request) -> dict:
+    try:
+        return await manager(request).run_optimize(body.model_dump(exclude_none=True))
+    except BacktestBusy as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/optimize/jobs")
+async def optimize_jobs(request: Request) -> list[dict]:
+    return await manager(request).list("optimize")
+
+
+@router.post("/optimize/{job_id}/apply")
+async def optimize_apply(job_id: str, request: Request) -> dict:
+    try:
+        return await manager(request).apply_optimization(job_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.get("/jobs/{job_id}")

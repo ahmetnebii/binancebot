@@ -37,6 +37,7 @@ import type {
   Calibration,
   MarketSymbol,
 } from '../api/types';
+import { AutoOptimize } from '../components/backtest/AutoOptimize';
 import { EquityDrawdownChart } from '../components/analytics/EquityDrawdownChart';
 import { MonthlyHeatmap } from '../components/analytics/MonthlyHeatmap';
 import { RHistogram } from '../components/analytics/RHistogram';
@@ -280,8 +281,12 @@ function ConfigCard({ blocked, onStarted }: { blocked: BacktestJob | undefined; 
             Mevcut risk ve strateji ayarlarınla çalışır. Sonuçlar geçmişe aittir, geleceği garanti etmez.
           </p>
           {blocked ? (
-            <Button variant="secondary" onClick={() => navigate(`/backtest/${blocked.id}`)} icon={<Loader2 className="h-4 w-4 animate-spin" />}>
-              Bir test çalışıyor — izle
+            <Button
+              variant="secondary"
+              onClick={() => (blocked.kind === 'optimize' ? window.scrollTo({ top: 0, behavior: 'smooth' }) : navigate(`/backtest/${blocked.id}`))}
+              icon={<Loader2 className="h-4 w-4 animate-spin" />}
+            >
+              {blocked.kind === 'optimize' ? 'Ayar arama çalışıyor' : 'Bir test çalışıyor — izle'}
             </Button>
           ) : (
             <Button variant="primary" size="lg" icon={<Play className="h-4 w-4" />} onClick={run} loading={busy} disabled={noStrategy || unknown.length > 0}>
@@ -1216,7 +1221,8 @@ function JobView({ id, onCalibrationChanged }: { id: string; onCalibrationChange
 
 export function Backtest({ id }: { id?: string }) {
   const jobsMap = useApp((s) => s.backtestJobs);
-  const jobs = useMemo(() => Object.values(jobsMap).sort((a, b) => b.created_at - a.created_at), [jobsMap]);
+  const allJobs = useMemo(() => Object.values(jobsMap).sort((a, b) => b.created_at - a.created_at), [jobsMap]);
+  const jobs = useMemo(() => allJobs.filter((j) => j.kind !== 'optimize'), [allJobs]);
   const list = useAsync<BacktestJob[]>(
     () =>
       api.backtestJobs().then((l) => {
@@ -1227,7 +1233,7 @@ export function Backtest({ id }: { id?: string }) {
   );
   const cal = useAsync<Calibration>(() => api.calibration(), []);
   const { confirm, node } = useConfirm();
-  const running = jobs.find(isActive);
+  const running = allJobs.find(isActive);
   const selectedId = id ?? jobs[0]?.id;
 
   const resetCal = async () => {
@@ -1271,6 +1277,8 @@ export function Backtest({ id }: { id?: string }) {
           </p>
         </div>
       </div>
+
+      <AutoOptimize blocked={!!running && running.kind !== 'optimize'} onApplied={() => void cal.reload()} />
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
         <ConfigCard blocked={running} onStarted={(j) => navigate(`/backtest/${j.id}`)} />

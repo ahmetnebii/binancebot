@@ -23,7 +23,7 @@ from ..paths import VERSION
 from ..risk.manager import Breaker, RiskManager, loss_streak, open_risk_usdt
 from ..risk.sizing import approx_liq_price, symbol_class
 from ..settings import SettingsStore
-from ..strategies.base import StrategyContext
+from ..strategies.base import StrategyContext, side_allowed
 from ..strategies.mean_reversion import MeanReversion
 from ..strategies.rs_rotation import RSRotation
 from ..strategies.scorer import estimate
@@ -320,6 +320,7 @@ class Engine:
             "scanned_symbols": len(universe),
         }
         log.info("Tarama (%s): %d sembol, %d fırsat, %.0f ms", tf, len(universe), len(found), (time.perf_counter() - t0) * 1000)
+        found = [sg for sg in found if side_allowed(sg.strategy, sg.side, self.store.strategies)]
         for sig in found:
             await self._on_new_signal(sig)
 

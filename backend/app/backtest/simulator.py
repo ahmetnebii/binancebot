@@ -25,7 +25,7 @@ from ..models import Position, SymbolInfo, side_sign
 from ..risk.manager import RiskManager, RiskState
 from ..risk.sizing import symbol_class
 from ..settings import RiskSettings, ScannerSettings, StrategySettings
-from ..strategies.base import StrategyContext
+from ..strategies.base import StrategyContext, side_allowed
 from ..strategies.mean_reversion import MeanReversion
 from ..strategies.rs_rotation import RSRotation
 from ..strategies.scorer import estimate
@@ -392,6 +392,8 @@ class Backtester:
     def _consider(self, sig, t: int) -> None:
         s = sig.symbol
         if s in self.positions or s in self.pending:
+            return
+        if not side_allowed(sig.strategy, sig.side, self.cfg.strategies):
             return
         mi = self.view.marks.get(s)
         _, ev = estimate(sig, self.cfg.taker_fee, self.slip, mi.funding_rate if mi else 0.0)

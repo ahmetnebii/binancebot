@@ -12,6 +12,7 @@ from ..models import SymbolInfo
 from ..util import new_id, now_ms
 from .data import BacktestCancelled, BinanceHistory, SyntheticHistory
 from .report import build_result, short_summary
+from .optimizer import BUDGETS, describe, optimize, params_from_settings
 from .simulator import STEP, Backtester, BacktestConfig
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -22,6 +23,19 @@ log = logging.getLogger(__name__)
 WARMUP_MS = 12 * 86_400_000
 DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "LINKUSDT", "DOTUSDT"]
 
+
+
+def _dedupe(board: list[dict]) -> list[dict]:
+    """Aynı sonucu veren (etkisiz parametre farkı) adayları tekilleştirir."""
+    seen: set = set()
+    out = []
+    for b in board:
+        key = tuple((b[k]["trades"], b[k]["expectancy_r"], b[k]["return_pct"]) for k in ("is", "oos"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(b)
+    return out
 
 class BacktestBusy(Exception):
     pass
@@ -245,8 +259,8 @@ class BacktestManager:
             return {k: v for k, v in self._job.items()}
         return await self.ctx.db.bt_get(job_id)
 
-    async def list(self) -> list[dict]:
-        jobs = await self.ctx.db.bt_list(20)
+    async def list(self, kind: str = "backtest") -> list[dict]:
+        jobs = [j for j in await self.ctx.db.bt_list(60) if j.get("kind", "backtest") == kind][:20]
         if self._job and self._job["status"] in ("queued", "running"):
             jobs = [self._job if j["id"] == self._job["id"] else j for j in jobs]
         return jobs
@@ -288,3 +302,160 @@ class BacktestManager:
             self.ctx.engine.set_calibration({})
         await self.ctx.events.log("info", "backtest", "Kalibrasyon kaldırıldı; varsayılan istatistiklere dönüldü")
         return self._empty_calibration()
+
+
+    # --- otomatik optimizasyon -------------------------------------------------
+    VERDICT_TEXT = {
+        "recommended": "Görülmemiş doğrulama döneminde de kâr eden, kapıları geçen bir ayar bulundu. Uygulanması önerilir.",
+        "weak": "Doğrulama döneminde hafif kârlı bir ayar bulundu ama güçlü değil. Uygularsan önce Simülasyon'da izle.",
+        "none": "Doğrulama döneminde kâr eden bir ayar bulunamadı. Bu piyasa koşullarında stratejilerin avantajı yok; gerçek parayla otomatik işlem önerilmez.",
+    }
+
+    async def run_optimize(self, body: dict[str, Any]) -> dict:
+        if self._task is not None and not self._task.done():
+            raise BacktestBusy("Zaten çalışan bir test veya optimizasyon var; bitmesini bekleyin veya iptal edin")
+        days = int(body.get("days") or 180)
+        if not 60 <= days <= 365:
+            raise ValueError("Optimizasyon için süre 60 ile 365 gün arasında olmalı")
+        top_n = int(body.get("top_n") or 30)
+        if not 5 <= top_n <= 80:
+            raise ValueError("Sembol sayısı 5 ile 80 arasında olmalı")
+        budget = str(body.get("budget") or "normal")
+        if budget not in BUDGETS:
+            raise ValueError("Derinlik hizli, normal veya derin olmalı")
+        cfg = self._resolve_config({"days": days, "top_n": top_n, "strategies": {"s1": True}})
+        cfg["budget"] = budget
+        cfg["candidates"] = BUDGETS[budget]
+        job = {
+            "id": new_id("opt"), "kind": "optimize", "created_at": now_ms(), "finished_at": None,
+            "status": "queued", "progress": {"phase": "data", "pct": 0.0, "message": "Sırada"},
+            "config": cfg, "error": None, "summary": None,
+        }
+        await self.ctx.db.bt_save(job)
+        self._cancel.clear()
+        self._job = job
+        self._publish(job, force=True)
+        self._task = asyncio.create_task(self._run_optimize(job), name=f"optimize-{job['id']}")
+        return job
+
+    async def _run_optimize(self, job: dict) -> None:
+        cfg = job["config"]
+        store = self.ctx.store
+        job["status"] = "running"
+        await self.ctx.db.bt_save(job)
+        self._publish(job, force=True)
+        try:
+            end = now_ms()
+            end -= end % STEP
+            start = end - cfg["days"] * 86_400_000
+            provider = SyntheticHistory() if self.ctx.synthetic else BinanceHistory(store.connection.live_rest, self.ctx.data_dir / "history")
+            data = await provider.load(
+                cfg["symbols"], start - WARMUP_MS, end,
+                progress=lambda f, m: self._set_progress(job, "data", f * 15.0, m),
+                cancelled=self._cancel.is_set,
+            )
+            if "BTCUSDT" not in data.bars:
+                raise RuntimeError("BTCUSDT verisi alınamadı; rejim tespiti yapılamıyor")
+            eng = self.ctx.engine
+            infos = {s: eng.market.symbols[s] for s in cfg["symbols"] if eng and s in eng.market.symbols}
+            base = {
+                "symbols": cfg["symbols"], "initial_equity": cfg["initial_equity"], "slippage_bps": cfg["slippage_bps"],
+                "taker_fee": cfg["taker_fee"], "maker_fee": cfg["maker_fee"],
+                "strategies": store.strategies.model_dump(), "risk": store.risk.model_dump(), "scanner": store.scanner.model_dump(),
+            }
+            baseline = params_from_settings(store.strategies, store.risk)
+            loop = asyncio.get_running_loop()
+
+            def prog(phase: str, pct: float, msg: str) -> None:
+                loop.call_soon_threadsafe(self._set_progress, job, phase, 15.0 + pct * 0.85, msg)
+
+            out = await asyncio.to_thread(optimize, data, infos, base, baseline, start, end, cfg["budget"], prog, self._cancel.is_set)
+
+            def row(b: Optional[dict]) -> Optional[dict]:
+                if b is None:
+                    return None
+                return {**describe(b["params"]), "params": b["params"], "is": b["is"], "oos": b["oos"]}
+
+            full_result = None
+            if out["full"] is not None:
+                warnings = ["Sentetik geliştirme verisi kullanıldı."] if data.source == "synthetic" else []
+                full_result = await asyncio.to_thread(
+                    build_result, out["full"]["raw"], initial_equity=cfg["initial_equity"], start_ms=start, end_ms=end,
+                    source=data.source, extra_warnings=warnings,
+                )
+            warnings = [
+                "Ayarlar eğitim döneminde seçildi, yalnızca hiç görülmemiş doğrulama döneminin sonucuna göre önerildi.",
+                "Geçmişte iyi çalışan ayar gelecekte de çalışacak diye garanti yoktur; uygulamadan sonra Simülasyon'da izleyin.",
+            ]
+            if data.source == "synthetic":
+                warnings.insert(0, "Sentetik geliştirme verisi kullanıldı: sonuçlar gerçek piyasayı yansıtmaz.")
+            result = {
+                "verdict": out["verdict"],
+                "verdict_text": self.VERDICT_TEXT[out["verdict"]],
+                "period": {"start": start, "split": out["split"], "end": end},
+                "candidates_tested": out["candidates_tested"],
+                "min_trades": out["min_trades"],
+                "best": row(out["best"]),
+                "baseline": row(out["baseline"]),
+                "leaderboard": [{"rank": i + 1, **row(b)} for i, b in enumerate(_dedupe(out["board"])[:10])],
+                "full": full_result,
+                "calibration": (full_result or {}).get("calibration", {}),
+                "data_source": data.source,
+                "warnings": warnings,
+            }
+            b = result["best"]
+            job["status"] = "done"
+            job["finished_at"] = now_ms()
+            job["summary"] = {
+                "verdict": out["verdict"], "label": b["label"] if b else None,
+                "oos_expectancy_r": b["oos"]["expectancy_r"] if b else None,
+                "oos_profit_factor": b["oos"]["profit_factor"] if b else None,
+                "oos_return_pct": b["oos"]["return_pct"] if b else None,
+            }
+            job["progress"] = {"phase": "done", "pct": 100.0, "message": "Tamamlandı"}
+            await self.ctx.db.bt_save(job, result)
+            await self.ctx.events.log(
+                "success" if out["verdict"] != "none" else "warning", "optimize",
+                f"Optimizasyon tamamlandı: {result['verdict_text']}", toast=True, title="Optimizasyon",
+            )
+        except (BacktestCancelled, asyncio.CancelledError):
+            job["status"] = "cancelled"
+            job["finished_at"] = now_ms()
+            await self.ctx.db.bt_save(job)
+        except Exception as exc:
+            log.exception("Optimizasyon hatası")
+            job["status"] = "failed"
+            job["finished_at"] = now_ms()
+            job["error"] = str(exc)
+            await self.ctx.db.bt_save(job)
+            await self.ctx.events.log("error", "optimize", f"Optimizasyon başarısız: {exc}", toast=True, title="Optimizasyon hatası")
+        finally:
+            self._publish(job, force=True)
+
+    async def apply_optimization(self, job_id: str) -> dict:
+        job = await self.ctx.db.bt_get(job_id)
+        if job is None or job.get("kind") != "optimize" or job.get("status") != "done" or "result" not in job:
+            raise ValueError("Tamamlanmış bir optimizasyon bulunamadı")
+        res = job["result"]
+        if res.get("verdict") == "none" or not res.get("best"):
+            raise ValueError("Bu optimizasyon uygulanabilir bir ayar bulamadı")
+        if res.get("data_source") == "synthetic" and not self.ctx.synthetic:
+            raise ValueError("Sentetik veriyle yapılmış optimizasyon gerçek sisteme uygulanamaz")
+        best = res["best"]["params"]
+        store = self.ctx.store
+        await store.update("strategies", best["strategies"])
+        await store.update("risk", {"min_ev_r": best["min_ev_r"]})
+        cal = res.get("calibration") or {}
+        if cal:
+            doc = {"source_job": job_id, "applied_at": now_ms(), "strategies": cal}
+            await self.ctx.db.kv_set("calibration", doc, now_ms())
+            if self.ctx.engine:
+                self.ctx.engine.set_calibration(cal)
+        job["applied_at"] = now_ms()
+        await self.ctx.db.bt_save(job)
+        self._publish(job, force=True)
+        await self.ctx.events.log(
+            "success", "optimize", f"Optimize ayarlar uygulandı: {res['best']['label']}; canlı tarama bu ayarlarla devam ediyor",
+            toast=True, title="Ayarlar uygulandı",
+        )
+        return {"ok": True, "applied": describe(best), "calibrated": bool(cal)}
