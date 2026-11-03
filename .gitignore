@@ -35,3 +35,4 @@ build/
 # Node / arayüz derlemesi
 node_modules/
 frontend/dist/
+*.tsbuildinfo

@@ -1,0 +1,190 @@
+@import '@fontsource-variable/inter';
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/500.css';
+@import '@fontsource/jetbrains-mono/600.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Tasarım belirteçleri (RGB kanalları) */
+  --c-bg: 10 13 18;            /* #0A0D12 */
+  --c-surface: 16 20 27;       /* #10141B */
+  --c-elevated: 21 26 35;      /* #151A23 */
+  --c-hover: 27 33 44;         /* #1B212C */
+  --c-border: 34 41 54;        /* #222936 */
+  --c-border-strong: 46 55 72; /* #2E3748 */
+  --c-text: 231 236 243;       /* #E7ECF3 */
+  --c-muted: 139 149 165;      /* #8B95A5 */
+  --c-subtle: 93 102 118;      /* #5D6676 */
+  --c-accent: 91 140 255;      /* #5B8CFF */
+  --c-up: 23 201 135;          /* #17C987 */
+  --c-down: 240 75 91;         /* #F04B5B */
+  --c-warn: 245 165 36;        /* #F5A524 */
+  --c-proj: 167 139 250;       /* #A78BFA */
+
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-bg text-fg font-sans antialiased;
+  font-size: 13.5px;
+  line-height: 1.45;
+  font-feature-settings: 'cv11', 'ss01', 'ss03';
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Tüm sayılar sabit genişlikli */
+.num {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'zero' 0;
+  letter-spacing: -0.01em;
+}
+
+.label {
+  @apply text-2xs font-semibold uppercase text-subtle;
+  letter-spacing: 0.07em;
+}
+
+/* İnce, koyu kaydırma çubukları */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--c-border-strong)) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgb(var(--c-border-strong));
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+:focus-visible {
+  outline: 2px solid rgb(var(--c-accent) / 0.85);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+input[type='number']::-webkit-outer-spin-button,
+input[type='number']::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type='number'] {
+  -moz-appearance: textfield;
+}
+
+::selection {
+  background: rgb(var(--c-accent) / 0.35);
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-line bg-surface shadow-card;
+  }
+  .card-head {
+    @apply flex items-center justify-between gap-3 px-4 pt-3.5 pb-2;
+  }
+  .card-title {
+    @apply text-[12.5px] font-semibold text-fg;
+  }
+  .divider {
+    @apply border-t border-line;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-md border border-line bg-elevated px-2 py-0.5 text-[11.5px] text-muted;
+  }
+  .kv {
+    @apply flex items-baseline justify-between gap-3 py-[7px];
+  }
+  .kv > dt {
+    @apply text-[12px] text-muted;
+  }
+  .kv > dd {
+    @apply num text-[12.5px] text-fg text-right;
+  }
+  .table-head th {
+    @apply label px-3 py-2.5 text-left font-semibold;
+  }
+  .table-row td {
+    @apply px-3 py-2.5 align-middle;
+  }
+  .skeleton {
+    @apply relative overflow-hidden rounded-md bg-elevated;
+  }
+  .skeleton::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.04), transparent);
+    animation: shimmer 1.4s infinite;
+  }
+}
+
+/* lightweight-charts filigranını gizlemek için bir şey yapmıyoruz; kütüphane v4'te logo eklemez. */
+
+.bg-grid {
+  background-image: radial-gradient(rgb(var(--c-border) / 0.55) 1px, transparent 1px);
+  background-size: 18px 18px;
+}
+
+.glass {
+  background: rgb(var(--c-surface) / 0.82);
+  backdrop-filter: saturate(140%) blur(10px);
+}
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* Kaydırıcı */
+.bb-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--bb-fill) var(--bb-pct), rgb(var(--c-border-strong)) var(--bb-pct));
+}
+.bb-range::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: rgb(var(--c-border-strong));
+}
+.bb-range::-moz-range-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--bb-fill);
+}
+.bb-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 16px;
+  width: 16px;
+  margin-top: -6px;
+  border-radius: 999px;
+  background: #fff;
+  border: 3px solid var(--bb-fill);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+.bb-range::-moz-range-thumb {
+  height: 12px;
+  width: 12px;
+  border-radius: 999px;
+  background: #fff;
+  border: 3px solid var(--bb-fill);
+}
