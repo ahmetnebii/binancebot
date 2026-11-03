@@ -94,6 +94,9 @@ export function SignalCard({
   const active = s.status === 'ACTIVE';
   const drift = s.price != null ? (s.price - s.entry) / s.entry : null;
   const plan = s.plan;
+  // Zaman dilimi uyumu başlıkta çip olarak gösterildiğinde aynı gerekçeyi tekrar listeleme.
+  const reasons =
+    typeof s.features?.mtf_aligned === 'number' ? s.reasons.filter((r) => !r.startsWith('Zaman dilimi uyumu')) : s.reasons;
   return (
     <div
       className={clsx(
@@ -179,14 +182,14 @@ export function SignalCard({
         ) : (
           <div className="text-[12px] text-subtle">Plan hesaplanıyor…</div>
         )}
-        {s.reasons.length > 0 && (
+        {reasons.length > 0 && (
           <div className="mt-2.5 flex flex-wrap gap-1.5">
-            {s.reasons.slice(0, 5).map((r) => (
+            {reasons.slice(0, 5).map((r) => (
               <span key={r} className="chip">
                 {r}
               </span>
             ))}
-            {s.reasons.length > 5 && <span className="chip">+{s.reasons.length - 5}</span>}
+            {reasons.length > 5 && <span className="chip">+{reasons.length - 5}</span>}
           </div>
         )}
         {s.warnings.length > 0 && (

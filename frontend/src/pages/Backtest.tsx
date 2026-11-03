@@ -51,6 +51,14 @@ import { navigate } from '../lib/router';
 import { toast, useApp } from '../store/app';
 
 const isNum = (x: unknown): x is number => typeof x === 'number' && Number.isFinite(x);
+
+const dtfDayMonth = new Intl.DateTimeFormat('tr-TR', { day: 'numeric', month: 'short' });
+
+/** "4 Eki – 3 Kas 2026"; yıllar farklıysa iki tarih de yıl içerir. */
+function fmtDateRange(a: number | null | undefined, b: number | null | undefined): string {
+  if (!isNum(a) || !isNum(b)) return `${fmtDate(a)} – ${fmtDate(b)}`;
+  return new Date(a).getFullYear() === new Date(b).getFullYear() ? `${dtfDayMonth.format(a)} – ${fmtDate(b)}` : `${fmtDate(a)} – ${fmtDate(b)}`;
+}
 /** Yüzde birimli değer (2.5 = %2,5) → biçimli metin. */
 const pctU = (v: number | null | undefined, sign = true, digits = 2) => (isNum(v) ? fmtPct(v / 100, { sign, digits }) : '—');
 
@@ -512,24 +520,47 @@ function RangeBar({
   min,
   max,
   tone,
+  reference,
 }: {
   marks: { v: number; label: string; strong?: boolean }[];
   min: number;
   max: number;
   tone: 'down' | 'up' | 'accent';
+  /** İnce dikey referans çizgisi (ör. başlangıç sermayesi). */
+  reference?: { v: number; label: string };
 }) {
   const span = max - min || 1;
-  const x = (v: number) => `${Math.max(0, Math.min(100, ((v - min) / span) * 100))}%`;
+  const pos = (v: number) => Math.max(0, Math.min(100, ((v - min) / span) * 100));
   const lo = Math.min(...marks.map((m) => m.v));
   const hi = Math.max(...marks.map((m) => m.v));
   const color = tone === 'down' ? 'bg-down' : tone === 'up' ? 'bg-up' : 'bg-accent';
+  // Birbirine çok yakın işaretlerin etiketleri çakışmasın: ikinci satıra indir.
+  let lastTop = -Infinity;
+  const placed = [...marks]
+    .sort((a, b) => a.v - b.v)
+    .map((m) => {
+      const p = pos(m.v);
+      const row = p - lastTop < 16 ? 1 : 0;
+      if (row === 0) lastTop = p;
+      return { ...m, p, row };
+    });
+  const twoRows = placed.some((m) => m.row === 1);
+  const align = (p: number) => (p < 8 ? 'left-0' : p > 92 ? 'right-0' : 'left-1/2 -translate-x-1/2');
   return (
-    <div className="relative mb-6 mt-2 h-2 rounded-full bg-elevated">
-      <div className={clsx('absolute inset-y-0 rounded-full opacity-35', color)} style={{ left: x(lo), width: `calc(${x(hi)} - ${x(lo)})` }} />
-      {marks.map((m) => (
-        <div key={m.label} className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2" style={{ left: x(m.v) }}>
+    <div className={clsx('relative mt-2 h-2 rounded-full bg-elevated', twoRows ? 'mb-10' : 'mb-6')}>
+      <div className={clsx('absolute inset-y-0 rounded-full opacity-35', color)} style={{ left: `${pos(lo)}%`, width: `${pos(hi) - pos(lo)}%` }} />
+      {reference && (
+        <div
+          className="absolute -bottom-1.5 -top-1.5 w-px -translate-x-1/2 bg-fg/50"
+          style={{ left: `${pos(reference.v)}%` }}
+          title={reference.label}
+          aria-label={reference.label}
+        />
+      )}
+      {placed.map((m) => (
+        <div key={m.label} className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2" style={{ left: `${m.p}%` }}>
           <div className={clsx('h-3.5 w-[3px] rounded-sm', color, !m.strong && 'opacity-70')} />
-          <div className="num absolute left-1/2 top-4 -translate-x-1/2 whitespace-nowrap text-[10px] text-subtle">{m.label}</div>
+          <div className={clsx('num absolute whitespace-nowrap text-[10px] text-subtle', m.row ? 'top-8' : 'top-4', align(m.p))}>{m.label}</div>
         </div>
       ))}
     </div>
@@ -587,19 +618,22 @@ function MonteCarloCard({ mc, initial }: { mc: BacktestResult['monte_carlo']; in
         <div>
           <div className="flex items-center justify-between text-[12px]">
             <span className="text-muted">Dönem sonu özsermaye</span>
-            <span className="num text-fg">medyan {fmtUsd(mc.final_p50)}</span>
+            <span className="num">
+              <span className="text-subtle">başlangıç {fmtUsd(initial, { digits: 0 })} · </span>
+              <span className="text-fg">medyan {fmtUsd(mc.final_p50)}</span>
+            </span>
           </div>
           <RangeBar
             min={fMin}
             max={fMax}
             tone={mc.final_p50 >= initial ? 'up' : 'down'}
+            reference={{ v: initial, label: `Başlangıç ${fmtUsd(initial)} USDT` }}
             marks={[
               { v: mc.final_p5, label: `p5 ${fmtUsd(mc.final_p5, { digits: 0 })}` },
               { v: mc.final_p50, label: `p50`, strong: true },
               { v: mc.final_p95, label: `p95 ${fmtUsd(mc.final_p95, { digits: 0 })}` },
             ]}
           />
-          <div className="-mt-3 text-[10.5px] text-subtle">Başlangıç {fmtUsd(initial)} USDT</div>
         </div>
         <div className="grid grid-cols-2 gap-3">
           {[
@@ -663,9 +697,7 @@ function WalkForwardCard({ rows }: { rows: BacktestResult['walk_forward'] }) {
                       {r.fold}
                     </span>
                   </td>
-                  <td className="num whitespace-nowrap text-[11.5px] text-muted">
-                    {fmtDate(r.start)} – {fmtDate(r.end)}
-                  </td>
+                  <td className="num whitespace-nowrap text-[11.5px] text-muted">{fmtDateRange(r.start, r.end)}</td>
                   <td className="num text-right text-muted">{r.trades}</td>
                   <td className={clsx('num text-right', pnlClass(r.expectancy_r))}>{fmtR(r.expectancy_r)}</td>
                   <td className="num text-right text-muted">{isNum(r.profit_factor) ? fmtNum(r.profit_factor, 2) : '—'}</td>
@@ -828,7 +860,7 @@ function ResultView({ job, result, onApply, applying, onDelete }: { job: Backtes
               )}
             </div>
             <div className="mt-1 text-[12px] text-muted">
-              {fmtDate(s.period_start)} – {fmtDate(s.period_end)} · {s.symbols} sembol · {strategiesText(job.config.strategies)} · başlangıç{' '}
+              {fmtDateRange(s.period_start, s.period_end)} · {s.symbols} sembol · {strategiesText(job.config.strategies)} · başlangıç{' '}
               {fmtUsd(s.initial_equity)} USDT
               {job.finished_at ? ` · ${fmtDuration(job.finished_at - job.created_at)} sürdü` : ''}
             </div>
@@ -870,7 +902,11 @@ function ResultView({ job, result, onApply, applying, onDelete }: { job: Backtes
             hint="Brüt kâr / brüt zarar. 1,3 üstü sağlıklı kabul edilir."
           />
           <Kpi label="Beklenti" value={fmtR(s.expectancy_r)} cls={pnlClass(s.expectancy_r)} sub="işlem başına" />
-          <Kpi label="Kazanma oranı" value={isNum(s.win_rate) ? fmtPct(s.win_rate, { digits: 1 }) : '—'} sub={`ort. ${fmtR(s.avg_win_r)} / ${fmtR(s.avg_loss_r)}`} />
+          <Kpi
+            label="Kazanma oranı"
+            value={isNum(s.win_rate) ? fmtPct(s.win_rate, { digits: 1 }) : '—'}
+            sub={<span title="Ortalama kazanç / ortalama kayıp (R)">{`${fmtR(s.avg_win_r)} / ${fmtR(s.avg_loss_r)}`}</span>}
+          />
           <Kpi label="İşlem" value={String(s.trades)} sub={`${fmtNum(s.trades_per_day, 2)} / gün`} />
           <Kpi
             label="Sharpe"
@@ -883,7 +919,7 @@ function ResultView({ job, result, onApply, applying, onDelete }: { job: Backtes
         </div>
       </Card>
 
-      <div className="grid grid-cols-2 gap-x-6 gap-y-1 rounded-xl border border-line bg-surface/60 px-4 py-2.5 text-[12px] sm:grid-cols-3 xl:grid-cols-6">
+      <div className="grid grid-cols-2 gap-x-6 gap-y-3 rounded-xl border border-line bg-surface/60 px-4 py-3 sm:grid-cols-3 xl:grid-cols-6">
         {[
           ['En iyi / en kötü', <span key="bw"><span className="text-up">{fmtR(s.best_r)}</span> / <span className="text-down">{fmtR(s.worst_r)}</span></span>],
           ['Ort. süre', isNum(s.avg_hold_hours) ? fmtDuration(s.avg_hold_hours * 3600_000) : '—'],
@@ -892,9 +928,9 @@ function ResultView({ job, result, onApply, applying, onDelete }: { job: Backtes
           ['Funding', <span key="f" className={pnlClass(s.funding_total)}>{fmtUsd(s.funding_total, { sign: true })}</span>],
           ['Son özsermaye', `${fmtUsd(s.final_equity)} USDT`],
         ].map(([k, v]) => (
-          <div key={String(k)} className="kv">
-            <dt>{k}</dt>
-            <dd>{v}</dd>
+          <div key={String(k)} className="min-w-0">
+            <div className="text-[11px] text-subtle">{k}</div>
+            <div className="num mt-0.5 truncate text-[12.5px] text-fg">{v}</div>
           </div>
         ))}
       </div>
@@ -919,70 +955,21 @@ function ResultView({ job, result, onApply, applying, onDelete }: { job: Backtes
             right={<InfoTip>1R, işlemde riske edilen tutardır. Sağlıklı bir trend stratejisinde çok sayıda küçük kayıp (−1R civarı) ve az sayıda büyük kazanç görülür.</InfoTip>}
           />
           <div className="px-4 pb-4 pt-2">
-            <RHistogram bins={result.r_histogram} height={190} />
+            <RHistogram bins={result.r_histogram} height={250} />
           </div>
         </Card>
         <MonteCarloCard mc={result.monte_carlo} initial={s.initial_equity} />
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
-        <Card>
-          <CardHeader title="Aylık getiriler" subtitle="Yıl sütunu bileşik toplamdır" icon={<CalendarRange className="h-4 w-4" />} />
-          <div className="px-3 pb-3">
-            <MonthlyHeatmap values={result.monthly.map((m) => ({ month: m.month, value: m.return_pct }))} mode="pct" format={(v) => pctU(v, true, 1)} />
-          </div>
-        </Card>
-        <WalkForwardCard rows={result.walk_forward} />
-      </div>
+      <Card>
+        <CardHeader title="Aylık getiriler" subtitle="Yıl sütunu bileşik toplamdır" icon={<CalendarRange className="h-4 w-4" />} />
+        <div className="px-3 pb-3">
+          <MonthlyHeatmap values={result.monthly.map((m) => ({ month: m.month, value: m.return_pct }))} mode="pct" format={(v) => pctU(v, true, 1)} />
+        </div>
+      </Card>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
-        <Card>
-          <CardHeader title="Strateji bazında" icon={<BarChart3 className="h-4 w-4" />} />
-          <div className="overflow-x-auto pb-2">
-            <table className="w-full min-w-[640px] text-[12.5px]">
-              <thead className="table-head border-y border-line">
-                <tr>
-                  <th>Strateji</th>
-                  <th className="!text-right">İşlem</th>
-                  <th className="!text-right">Kazanma</th>
-                  <th className="!text-right">PF</th>
-                  <th className="!text-right">Beklenti</th>
-                  <th className="!text-right">Ort. kazanç / kayıp</th>
-                  <th className="!text-right">K/Z</th>
-                </tr>
-              </thead>
-              <tbody>
-                {result.by_strategy.map((b) => (
-                  <tr key={b.strategy} className="table-row border-b border-line/60">
-                    <td>
-                      <span className="flex items-center gap-2 font-medium text-fg">
-                        <Badge tone={strategyTone(b.strategy)}>{b.strategy}</Badge>
-                        <span className="truncate">{b.strategy_name}</span>
-                      </span>
-                    </td>
-                    <td className="num text-right text-muted">{b.trades}</td>
-                    <td className="num text-right text-muted">{isNum(b.win_rate) ? fmtPct(b.win_rate, { digits: 0 }) : '—'}</td>
-                    <td className={clsx('num text-right', isNum(b.profit_factor) && b.profit_factor < 1 ? 'text-down' : 'text-muted')}>
-                      {isNum(b.profit_factor) ? fmtNum(b.profit_factor, 2) : '—'}
-                    </td>
-                    <td className={clsx('num text-right font-semibold', pnlClass(b.expectancy_r))}>{fmtR(b.expectancy_r)}</td>
-                    <td className="num text-right">
-                      <span className="text-up">{fmtR(b.avg_win_r)}</span> <span className="text-subtle">/</span> <span className="text-down">{fmtR(b.avg_loss_r)}</span>
-                    </td>
-                    <td className={clsx('num text-right font-semibold', pnlClass(b.total_pnl))}>{fmtUsd(b.total_pnl, { sign: true })}</td>
-                  </tr>
-                ))}
-                {!result.by_strategy.length && (
-                  <tr>
-                    <td colSpan={7} className="px-3 py-4 text-center text-[12px] text-subtle">
-                      İşlem yok
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </Card>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <WalkForwardCard rows={result.walk_forward} />
         <Card>
           <CardHeader title="Yön bazında" icon={<Scale className="h-4 w-4" />} />
           <div className="overflow-x-auto pb-2">
@@ -1020,6 +1007,54 @@ function ResultView({ job, result, onApply, applying, onDelete }: { job: Backtes
           </div>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader title="Strateji bazında" icon={<BarChart3 className="h-4 w-4" />} />
+        <div className="overflow-x-auto pb-2">
+          <table className="w-full min-w-[640px] text-[12.5px]">
+            <thead className="table-head border-y border-line">
+              <tr>
+                <th>Strateji</th>
+                <th className="!text-right">İşlem</th>
+                <th className="!text-right">Kazanma</th>
+                <th className="!text-right">PF</th>
+                <th className="!text-right">Beklenti</th>
+                <th className="!text-right">Ort. kazanç / kayıp</th>
+                <th className="!text-right">K/Z</th>
+              </tr>
+            </thead>
+            <tbody>
+              {result.by_strategy.map((b) => (
+                <tr key={b.strategy} className="table-row border-b border-line/60">
+                  <td>
+                    <span className="flex items-center gap-2 font-medium text-fg">
+                      <Badge tone={strategyTone(b.strategy)}>{b.strategy}</Badge>
+                      <span className="truncate">{b.strategy_name}</span>
+                    </span>
+                  </td>
+                  <td className="num text-right text-muted">{b.trades}</td>
+                  <td className="num text-right text-muted">{isNum(b.win_rate) ? fmtPct(b.win_rate, { digits: 0 }) : '—'}</td>
+                  <td className={clsx('num text-right', isNum(b.profit_factor) && b.profit_factor < 1 ? 'text-down' : 'text-muted')}>
+                    {isNum(b.profit_factor) ? fmtNum(b.profit_factor, 2) : '—'}
+                  </td>
+                  <td className={clsx('num text-right font-semibold', pnlClass(b.expectancy_r))}>{fmtR(b.expectancy_r)}</td>
+                  <td className="num text-right">
+                    <span className="text-up">{fmtR(b.avg_win_r)}</span> <span className="text-subtle">/</span> <span className="text-down">{fmtR(b.avg_loss_r)}</span>
+                  </td>
+                  <td className={clsx('num text-right font-semibold', pnlClass(b.total_pnl))}>{fmtUsd(b.total_pnl, { sign: true })}</td>
+                </tr>
+              ))}
+              {!result.by_strategy.length && (
+                <tr>
+                  <td colSpan={7} className="px-3 py-4 text-center text-[12px] text-subtle">
+                    İşlem yok
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
 
       <TradesTable trades={result.trades} />
     </div>
