@@ -80,11 +80,14 @@ def _ev(trades, exp, pf):
 
 def test_verdict_thresholds():
     assert _verdict(_ev(20, 0.15, 1.5)) == "recommended"
-    assert _verdict(_ev(14, 0.30, 2.0)) == "weak"  # az işlem → en fazla zayıf
-    assert _verdict(_ev(20, 0.05, 1.1)) == "weak"
-    assert _verdict(_ev(9, 0.5, 3.0)) == "none"
+    assert _verdict(_ev(14, 0.30, 2.0)) == "none"  # çok az işlem
+    assert _verdict(_ev(20, 0.06, 1.15)) == "weak"
+    assert _verdict(_ev(547, 0.02, 1.01)) == "none"  # sıfıra yakın: gürültü, avantaj değil
     assert _verdict(_ev(40, -0.02, 0.95)) == "none"
     assert _verdict(_ev(40, None, None)) == "none"
+    # eğitimde zarar eden ayar doğrulamada ne yaparsa yapsın önerilmez
+    assert _verdict(_ev(30, 0.2, 1.6), _ev(700, -0.05, 0.92)) == "none"
+    assert _verdict(_ev(30, 0.2, 1.6), _ev(700, 0.08, 1.2)) == "recommended"
 
 
 def test_dedupe_board():

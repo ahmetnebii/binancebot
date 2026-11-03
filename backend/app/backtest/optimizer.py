@@ -236,12 +236,18 @@ def _score_is(ev: dict, min_trades: int) -> float:
     return ev["t_stat"] - penalty
 
 
-def _verdict(oos: dict) -> str:
+def _verdict(oos: dict, is_ev: Optional[dict] = None) -> str:
+    """Karar yalnızca doğrulama dönemine göre; eğitimde zarar eden ayar hiçbir zaman önerilmez.
+
+    PF 1,0x gibi sıfıra yakın sonuçlar gürültüdür: "zayıf avantaj" için bile anlamlı bir pay aranır.
+    """
+    if is_ev is not None and (is_ev.get("expectancy_r") or 0.0) <= 0:
+        return "none"
     pf = oos["profit_factor"] or 0.0
     exp = oos["expectancy_r"] or 0.0
     if oos["trades"] >= 15 and exp >= 0.10 and pf >= 1.3:
         return "recommended"
-    if oos["trades"] >= 10 and exp > 0 and pf > 1.0:
+    if oos["trades"] >= 15 and exp >= 0.05 and pf >= 1.1:
         return "weak"
     return "none"
 
@@ -333,9 +339,12 @@ def optimize(
         return o["t_stat"] + 0.2 * b["is_score"]
 
     board.sort(key=oos_key, reverse=True)
-    best = board[0] if board else None
+    # Yalnızca eğitimde de kârlı olan adaylar seçilebilir. Mevcut ayar doğrulamaya yalnızca
+    # karşılaştırma için girer; eğitimde zarar ettiyse "en iyi" seçilemez.
+    eligible = [b for b in board if b["is_score"] > -1e8 and (b["is"]["expectancy_r"] or 0.0) > 0]
+    best = eligible[0] if eligible else None
     baseline_row = next((b for b in board if b["params"] == baseline), None)
-    verdict = _verdict(best["oos"]) if best else "none"
+    verdict = _verdict(best["oos"], best["is"]) if best else "none"
 
     full = None
     if best is not None and verdict != "none":

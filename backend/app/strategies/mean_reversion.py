@@ -49,7 +49,7 @@ class MeanReversion:
         if (side == "LONG" and r >= cfg.s3_rsi) or (side == "SHORT" and r <= 100.0 - cfg.s3_rsi):
             return None
         adx1 = float(adx(b["h"][-300:], b["l"][-300:], b["c"][-300:], 14)[-1])
-        if not math.isfinite(adx1) or adx1 >= 22.0:
+        if not math.isfinite(adx1) or adx1 >= 25.0:
             return None
         vol_sum = float(v[-96:].sum())
         if vol_sum <= 0:
@@ -59,7 +59,7 @@ class MeanReversion:
         if sd <= 0:
             return None
         dev = (close - vwap) / sd
-        if sgn * dev > -2.0:
+        if sgn * dev > -1.0:  # VWAP'tan en az 1σ uzak; daha fazlası puanı artırır
             return None
         at = float(atr(h, l, c, 14)[-1])
         if not math.isfinite(at) or at <= 0:
@@ -78,9 +78,9 @@ class MeanReversion:
         rsi_depth = (cfg.s3_rsi - r) if side == "LONG" else (r - (100.0 - cfg.s3_rsi))
         score = (
             50
-            + clamp01((abs(dev) - 2.0) / 1.5) * 15
+            + clamp01((abs(dev) - 1.0) / 2.0) * 15
             + clamp01(rsi_depth / 10.0) * 10
-            + clamp01((22.0 - adx1) / 10.0) * 10
+            + clamp01((25.0 - adx1) / 10.0) * 10
             + (5 if vol_z < 2.0 else -5)
         )
         band = "alt" if side == "LONG" else "üst"

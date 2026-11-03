@@ -313,7 +313,7 @@ class BacktestManager:
     VERDICT_TEXT = {
         "recommended": "Görülmemiş doğrulama döneminde de kâr eden, kapıları geçen bir ayar bulundu. Uygulanması önerilir.",
         "weak": "Doğrulama döneminde hafif kârlı bir ayar bulundu ama güçlü değil. Uygularsan önce Simülasyon'da izle.",
-        "none": "Doğrulama döneminde kâr eden bir ayar bulunamadı. Bu piyasa koşullarında stratejilerin avantajı yok; gerçek parayla otomatik işlem önerilmez.",
+        "none": "Hem eğitim hem doğrulama döneminde anlamlı kâr eden bir ayar bulunamadı (sıfıra yakın sonuçlar gürültü sayılır). Bu piyasa koşullarında stratejilerin avantajı yok; gerçek parayla otomatik işlem önerilmez.",
     }
 
     async def run_optimize(self, body: dict[str, Any]) -> dict:
