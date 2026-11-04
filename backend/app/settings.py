@@ -165,6 +165,9 @@ class StrategySettings(BaseModel):
     # S6: Strateji Laboratuvarı'nın bulduğu kural (laboratuvar "uygula" ile yazar)
     lab_enabled: bool = False
     lab_rule: Optional[dict[str, Any]] = None
+    lab_paper_only: bool = False  # deneme kuralı: yalnızca Simülasyon'da otomatik işlenir
+    # Coin grubu bazlı kurallar: [{key, symbols, vol_min, vol_max, rule, paper_only, label}]
+    lab_groups: Optional[list[dict[str, Any]]] = None
     # Ortak filtreler (tüm stratejilere uygulanır)
     regime_filter: Literal["normal", "strict"] = "normal"
     funding_max: float = Field(0.0005, ge=0.0001, le=0.005)

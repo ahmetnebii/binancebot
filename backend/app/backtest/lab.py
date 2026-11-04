@@ -25,7 +25,9 @@ import numpy as np
 from ..features.indicators import aggregate_bars
 from ..models import SymbolInfo
 from ..settings import RiskSettings, ScannerSettings, StrategySettings
-from ..strategies.lab_rules import Ind, btc_trend_series, describe_rule, mutate, random_rule, rule_signals, stop_for
+from ..strategies.lab_rules import (
+    GROUP_TR, ByteLRU, Ind, btc_trend_series, describe_rule, hourly_vol, mutate, random_rule, rule_signals, stop_for,
+)
 from ..util import TF_MS
 from . import metrics as M
 from .data import BacktestCancelled, HistoryData
@@ -43,7 +45,8 @@ _W: dict[str, Any] = {}
 # --- işçi ---------------------------------------------------------------------------------
 def _init_worker(data: HistoryData, infos: dict[str, SymbolInfo], base: dict) -> None:
     _W.clear()
-    _W.update(data=data, infos=infos, base=base, tf={}, ind={}, btc={}, fund={})
+    _W.update(data=data, infos=infos, base=base, tf={}, ind={}, btc={}, fund={},
+              lru=ByteLRU(int(base.get("cache_mb", 500)) * 1024 * 1024))
     btc = data.bars.get("BTCUSDT")
     btc_1h = aggregate_bars(btc, TF_MS["1h"]) if btc is not None else None
     _W["btc_1h_t"] = (btc_1h["t"] + TF_MS["1h"]) if btc_1h is not None else None
@@ -64,7 +67,7 @@ def _tf_arrays(sym: str, tf: str) -> dict[str, np.ndarray]:
 def _ind(sym: str, tf: str) -> Ind:
     key = (sym, tf)
     if key not in _W["ind"]:
-        _W["ind"][key] = Ind(_tf_arrays(sym, tf))
+        _W["ind"][key] = Ind(_tf_arrays(sym, tf), cache=_W["lru"], prefix=key)
     return _W["ind"][key]
 
 
@@ -85,7 +88,7 @@ def _btc_for(sym: str, tf: str) -> Optional[np.ndarray]:
     return _W["btc"][key]
 
 
-def simulate_rule(rule: dict, start: int, end: int) -> list[tuple[int, str, float]]:
+def simulate_rule(rule: dict, start: int, end: int, symbols: Optional[list[str]] = None) -> list[tuple[int, str, float]]:
     """Hızlı, sembol başına tek pozisyonlu işlem simülasyonu. Dönüş: (giriş zamanı, sembol, R)."""
     base = _W["base"]
     taker, maker, slip = base["taker_fee"], base["maker_fee"], base["slippage_bps"] / 10_000.0
@@ -99,7 +102,7 @@ def simulate_rule(rule: dict, start: int, end: int) -> list[tuple[int, str, floa
     time_bars = int(rule["time_bars"])
     k_stop = float(rule["stop_atr"])
     out: list[tuple[int, str, float]] = []
-    for sym in base["symbols"]:
+    for sym in symbols or base["symbols"]:
         if sym not in _W["data"].bars:
             continue
         a = _tf_arrays(sym, tf)
@@ -223,13 +226,14 @@ def _robust(trades: list[tuple[int, str, float]], start: int, end: int, min_trad
     return st
 
 
-def evaluate_chunk(rules: list[dict], start: int, split1: int, split2: int, min_trades: int) -> list[dict]:
+def evaluate_chunk(rules: list[dict], start: int, split1: int, split2: int, min_trades: int,
+                   symbols: Optional[list[str]] = None) -> list[dict]:
     """İşçide: kuralları hızlı simüle eder, EĞİTİM ve DOĞRULAMA istatistiklerini döndürür.
     Final sınavı dönemi burada hesaplanmaz bile (seçime sızmasın)."""
     out = []
     for rule in rules:
         try:
-            tr = simulate_rule(rule, start, split2)
+            tr = simulate_rule(rule, start, split2, symbols)
         except Exception as exc:  # hatalı kural tüm aramayı durdurmasın
             out.append({"rule": rule, "is": {"trades": 0, "score": -1e9, "error": str(exc)}, "oos": None})
             continue
@@ -240,14 +244,14 @@ def evaluate_chunk(rules: list[dict], start: int, split1: int, split2: int, min_
 
 
 # --- tam portföy simülasyonu ---------------------------------------------------------------
-def full_sim(rule: dict, start: int, end: int, keep_raw: bool = False) -> dict:
+def full_sim(rule: dict, start: int, end: int, keep_raw: bool = False, symbols: Optional[list[str]] = None) -> dict:
     base = _W["base"]
     strat = StrategySettings.model_validate({
         **base["strategies"], "s1_enabled": False, "s2_enabled": False, "s3_enabled": False,
         "s4_enabled": False, "s5_enabled": False, "lab_enabled": True, "lab_rule": rule,
     })
     cfg = BacktestConfig(
-        symbols=base["symbols"], start_ms=start, end_ms=end, initial_equity=base["initial_equity"],
+        symbols=symbols or base["symbols"], start_ms=start, end_ms=end, initial_equity=base["initial_equity"],
         s1=False, s2=False, s3=False, s4=False, s5=False, lab=True,
         slippage_bps=base["slippage_bps"], taker_fee=base["taker_fee"], maker_fee=base["maker_fee"],
         risk=RiskSettings.model_validate(base["risk"]), strategies=strat,
@@ -279,6 +283,8 @@ def verdict(final: dict, dev: dict, is_t: float, bar: float) -> str:
     """final: final sınavı (tam simülasyon), dev: eğitim+doğrulama (tam simülasyon)."""
     if (dev.get("expectancy_r") or 0.0) <= 0:
         return "none"
+    if final.get("return_pct") is not None and final["return_pct"] <= 0:
+        return "none"  # R cinsinden kâr görünse bile gerçek portföy parası azaldıysa avantaj yok
     pf = final.get("profit_factor") or 0.0
     exp = final.get("expectancy_r") or 0.0
     n = final.get("trades", 0)
@@ -287,6 +293,46 @@ def verdict(final: dict, dev: dict, is_t: float, bar: float) -> str:
     if n >= 15 and exp >= 0.05 and pf >= 1.1:
         return "weak"
     return "none"
+
+
+def make_groups(data: HistoryData, symbols: list[str], start: int, split1: int) -> list[dict]:
+    """Coinleri YALNIZCA eğitim dönemindeki davranışlarına göre gruplar (sonraki dönem bilgisi kullanılmaz).
+
+    big : eğitimde en yüksek işlem hacimli coinler (≈ ilk %20, en az 4)
+    mid : kalanlardan saatlik oynaklığı medyanın altında olanlar
+    high: kalanlardan saatlik oynaklığı medyanın üstünde olanlar
+    """
+    stats = []
+    for s in symbols:
+        a = data.bars.get(s)
+        if a is None:
+            continue
+        m = (a["t"] >= start) & (a["t"] < split1)
+        if m.sum() < 500:
+            continue
+        h1 = aggregate_bars({k: v[m] for k, v in a.items()}, TF_MS["1h"])
+        stats.append((s, float(a["qv"][m].sum()), hourly_vol(h1["c"])))
+    stats.sort(key=lambda x: x[1], reverse=True)
+    n_big = max(4, len(stats) // 5)
+    big = [s for s, _, _ in stats[:n_big]]
+    rest = sorted([x for x in stats[n_big:] if math.isfinite(x[2])], key=lambda x: x[2])
+    if len(rest) < 8:
+        return [{"key": "all", "symbols": [s for s, _, _ in stats], "vol_min": None, "vol_max": None}]
+    mid_n = len(rest) // 2
+    split_vol = (rest[mid_n - 1][2] + rest[mid_n][2]) / 2.0
+    return [
+        {"key": "big", "symbols": big, "vol_min": None, "vol_max": None},
+        {"key": "mid", "symbols": [s for s, _, _ in rest[:mid_n]], "vol_min": None, "vol_max": split_vol},
+        {"key": "high", "symbols": [s for s, _, _ in rest[mid_n:]], "vol_min": split_vol, "vol_max": None},
+    ]
+
+
+def forward_ok(best: Optional[dict]) -> bool:
+    """Simülasyonda canlı denemeye değer mi: dört aşamanın hepsinde pozitif beklenti."""
+    if not best or not best.get("final"):
+        return False
+    stages = [best["is"], best["oos"] or {}, best["dev"] or {}, best["final"]]
+    return all((st.get("expectancy_r") or 0.0) > 0 for st in stages) and best["final"].get("trades", 0) >= 5
 
 
 def run_lab(
@@ -299,15 +345,18 @@ def run_lab(
     progress: Callable[[str, float, str], None],
     cancelled: Callable[[], bool],
     seed: int = 20261103,
+    grouped: bool = False,
 ) -> dict:
     total = BUDGETS.get(budget, 5000)
     split1 = start + int((end - start) * 0.6)
     split2 = start + int((end - start) * 0.8)
-    days_is = (split1 - start) / 86_400_000
-    min_trades = int(max(30, days_is / 3))
-    workers = max(1, min(6, (os.cpu_count() or 2) - 1))  # her işçi ~250 MB önbellek tutar
-    rng = random.Random(seed)
-    seen: set[str] = set()
+    days = (end - start) / 86_400_000
+    # uzun geçmişte her işçi daha çok bellek tutar: işçi sayısını ona göre sınırla
+    cap_workers = 6 if days <= 400 else 4
+    workers = max(1, min(cap_workers, (os.cpu_count() or 2) - 1))
+    groups = make_groups(data, base["symbols"], start, split1) if grouped else [
+        {"key": "all", "symbols": [s for s in base["symbols"] if s in data.bars], "vol_min": None, "vol_max": None}
+    ]
 
     ex: Optional[ProcessPoolExecutor]
     try:
@@ -316,18 +365,58 @@ def run_lab(
         ex = None
         _init_worker(data, infos, base)
 
+    span = 100.0 / len(groups)
+    try:
+        outs = []
+        for gi, g in enumerate(groups):
+            name = GROUP_TR[g["key"]]
+            lo = gi * span
+
+            def gprog(phase: str, pct: float, msg: str, lo: float = lo, name: str = name, gi: int = gi) -> None:
+                prefix = f"[{gi + 1}/{len(groups)} · {name}] " if len(groups) > 1 else ""
+                progress(phase, lo + pct * span / 100.0, prefix + msg)
+
+            res = _search_group(ex, data, infos, base, g["symbols"], start, split1, split2, end, total, gprog, cancelled,
+                                seed + gi * 7919, workers)
+            res.update(key=g["key"], name=name, symbols=g["symbols"], vol_min=g["vol_min"], vol_max=g["vol_max"])
+            res["forward_ok"] = forward_ok(res["best"])
+            outs.append(res)
+        order = {"recommended": 2, "weak": 1, "none": 0}
+        overall = max((o["verdict"] for o in outs), key=lambda v: order[v]) if outs else "none"
+        return {"verdict": overall, "groups": outs, "split1": split1, "split2": split2, "workers": workers}
+    finally:
+        if ex is not None:
+            ex.shutdown(wait=False, cancel_futures=True)
+
+
+def _search_group(
+    ex: Optional[ProcessPoolExecutor], data: HistoryData, infos: dict, base: dict, symbols: list[str],
+    start: int, split1: int, split2: int, end: int, total: int,
+    progress: Callable[[str, float, str], None], cancelled: Callable[[], bool], seed: int, workers: int,
+) -> dict:
+    days_is = (split1 - start) / 86_400_000
+    # grup küçüldükçe gereken işlem sayısı da orantılı (ama en az 20)
+    min_trades = int(max(20, days_is / 3 * min(1.0, len(symbols) / 30)))
+    rng = random.Random(seed)
+    seen: set[str] = set()
+
     def run_batch(rules: list[dict], lo: float, hi: float, label: str, done_before: int, grand_total: int) -> list[dict]:
+        rules = sorted(rules, key=lambda r: r["tf"])  # aynı zaman dilimi aynı işçide: önbellek isabeti
         chunks = [rules[i:i + CHUNK] for i in range(0, len(rules), CHUNK)]
         results: list[dict] = []
+
+        def report() -> None:
+            d = done_before + len(results)
+            progress("search", lo + (hi - lo) * len(results) / max(1, len(rules)), f"{label}: {d:,}/{grand_total:,} kural".replace(",", "."))
+
         if ex is None:
             for ch in chunks:
                 if cancelled():
                     raise BacktestCancelled()
-                results += evaluate_chunk(ch, start, split1, split2, min_trades)
-                d = done_before + len(results)
-                progress("search", lo + (hi - lo) * len(results) / max(1, len(rules)), f"{label}: {d:,}/{grand_total:,} kural".replace(",", "."))
+                results += evaluate_chunk(ch, start, split1, split2, min_trades, symbols)
+                report()
             return results
-        pending: set[Future] = {ex.submit(evaluate_chunk, ch, start, split1, split2, min_trades) for ch in chunks}
+        pending: set[Future] = {ex.submit(evaluate_chunk, ch, start, split1, split2, min_trades, symbols) for ch in chunks}
         while pending:
             if cancelled():
                 for f in pending:
@@ -337,8 +426,7 @@ def run_lab(
             for f in done:
                 results += f.result()
             if done:
-                d = done_before + len(results)
-                progress("search", lo + (hi - lo) * len(results) / max(1, len(rules)), f"{label}: {d:,}/{grand_total:,} kural".replace(",", "."))
+                report()
         return results
 
     def fresh(make: Callable[[], dict], k: int) -> list[dict]:
@@ -353,79 +441,72 @@ def run_lab(
                 out.append(r)
         return out
 
-    try:
-        n_rand = int(total * (1 - EVOLVE_SHARE))
-        progress("search", 0.0, f"{total:,} kural hazırlanıyor ({workers} paralel işçi)".replace(",", "."))
-        first = fresh(lambda: random_rule(rng), n_rand)
-        res = run_batch(first, 0.0, 60.0, "Keşif taraması", 0, total)
-        res.sort(key=lambda r: r["is"]["score"], reverse=True)
-        # Evrimsel aşama: en iyi kuralların komşuları
-        parents = [r["rule"] for r in res if r["is"]["score"] > -1e8][:40]
-        if parents:
-            kids = fresh(lambda: mutate(rng.choice(parents), rng), total - len(first))
-            res += run_batch(kids, 60.0, 82.0, "Evrimsel iyileştirme", len(first), total)
-        res.sort(key=lambda r: r["is"]["score"], reverse=True)
-        tested = len(res)
-        bar = luck_bar(tested)
-
-        # Doğrulama: eğitimde en iyi 200 → doğrulamada da kârlı olanlar
-        short = [r for r in res if r["is"]["score"] > -1e8][:SHORTLIST]
-        passed = [r for r in short if (r["oos"] or {}).get("trades", 0) >= 10 and (r["oos"]["expectancy_r"] or 0) > 0]
-        passed.sort(key=lambda r: r["oos"]["t_stat"] + 0.5 * r["is"]["score"], reverse=True)
-        finalists = passed[:FINALISTS]
-        progress("validate", 84.0, f"{len(short)} güçlü aday doğrulandı, {len(passed)} tanesi görülmemiş dönemde de kârlı")
-
-        # Finalistler: canlıyla aynı portföy simülatöründe eğitim+doğrulama dönemi
+    def call(fn: Callable, *args: Any) -> Any:
         if ex is None:
-            _init_worker(data, infos, base)
-        dev_runs: list[dict] = []
-        if finalists:
-            if ex is not None:
-                futs = [ex.submit(full_sim, r["rule"], start, split2) for r in finalists]
-                for k, f in enumerate(futs):
-                    while not f.done():
-                        if cancelled():
-                            raise BacktestCancelled()
-                        wait([f], timeout=1.0)
-                    dev_runs.append(f.result())
-                    progress("validate", 84.0 + 8.0 * (k + 1) / len(futs), f"Gerçekçi portföy simülasyonu {k + 1}/{len(futs)}")
+            return fn(*args)
+        f = ex.submit(fn, *args)
+        while not f.done():
+            if cancelled():
+                raise BacktestCancelled()
+            wait([f], timeout=1.0)
+        return f.result()
+
+    n_rand = int(total * (1 - EVOLVE_SHARE))
+    progress("search", 0.0, f"{total:,} kural hazırlanıyor".replace(",", ".") + f" ({len(symbols)} coin, {workers} paralel işçi)")
+    first = fresh(lambda: random_rule(rng), n_rand)
+    res = run_batch(first, 0.0, 60.0, "Keşif taraması", 0, total)
+    res.sort(key=lambda r: r["is"]["score"], reverse=True)
+    parents = [r["rule"] for r in res if r["is"]["score"] > -1e8][:40]
+    if parents:
+        kids = fresh(lambda: mutate(rng.choice(parents), rng), total - len(first))
+        res += run_batch(kids, 60.0, 82.0, "Evrimsel iyileştirme", len(first), total)
+    res.sort(key=lambda r: r["is"]["score"], reverse=True)
+    tested = len(res)
+    bar = luck_bar(tested)
+
+    short = [r for r in res if r["is"]["score"] > -1e8][:SHORTLIST]
+    passed = [r for r in short if (r["oos"] or {}).get("trades", 0) >= 10 and (r["oos"]["expectancy_r"] or 0) > 0]
+    passed.sort(key=lambda r: r["oos"]["t_stat"] + 0.5 * r["is"]["score"], reverse=True)
+    finalists = passed[:FINALISTS]
+    progress("validate", 84.0, f"{len(short)} güçlü aday, {len(passed)} tanesi doğrulamada da kârlı")
+
+    if ex is None:
+        _init_worker(data, infos, base)
+    dev_runs: list[dict] = []
+    if finalists:
+        futs = [ex.submit(full_sim, r["rule"], start, split2, False, symbols) for r in finalists] if ex is not None else None
+        for k, r in enumerate(finalists):
+            if futs is not None:
+                f = futs[k]
+                while not f.done():
+                    if cancelled():
+                        raise BacktestCancelled()
+                    wait([f], timeout=1.0)
+                dev_runs.append(f.result())
             else:
-                for k, r in enumerate(finalists):
-                    dev_runs.append(full_sim(r["rule"], start, split2))
-                    progress("validate", 84.0 + 8.0 * (k + 1) / len(finalists), f"Gerçekçi portföy simülasyonu {k + 1}/{len(finalists)}")
-        fast_by = {rule_key(r["rule"]): r for r in finalists}
-        dev_runs.sort(key=lambda d: d["eval"]["t_stat"], reverse=True)
-        winner = next((d for d in dev_runs if (d["eval"]["expectancy_r"] or 0) > 0), None)
+                dev_runs.append(full_sim(r["rule"], start, split2, False, symbols))
+            progress("validate", 84.0 + 8.0 * (k + 1) / len(finalists), f"Gerçekçi portföy simülasyonu {k + 1}/{len(finalists)}")
+    fast_by = {rule_key(r["rule"]): r for r in finalists}
+    dev_runs.sort(key=lambda d: d["eval"]["t_stat"], reverse=True)
+    winner = next((d for d in dev_runs if (d["eval"]["expectancy_r"] or 0) > 0), None)
 
-        final = None
-        full = None
-        v = "none"
-        if winner is not None:
-            progress("final", 93.0, "Final sınavı: kazanan kural hiç görülmemiş son dönemde test ediliyor")
-            if ex is not None:
-                final = ex.submit(full_sim, winner["rule"], split2, end).result()
-                full = ex.submit(full_sim, winner["rule"], start, end, True).result()
-            else:
-                final = full_sim(winner["rule"], split2, end)
-                full = full_sim(winner["rule"], start, end, True)
-            fast = fast_by[rule_key(winner["rule"])]
-            v = verdict(final["eval"], winner["eval"], fast["is"]["t_stat"], bar)
-        progress("final", 98.0, "Sonuç hazırlanıyor")
+    def row(r: dict) -> dict:
+        return {**describe_rule(r["rule"]), "rule": r["rule"], "is": r["is"], "oos": r["oos"]}
 
-        def row(r: dict) -> dict:
-            return {**describe_rule(r["rule"]), "rule": r["rule"], "is": r["is"], "oos": r["oos"]}
-
-        best = None
-        if winner is not None:
-            fast = fast_by[rule_key(winner["rule"])]
-            best = {**row(fast), "dev": winner["eval"], "final": final["eval"] if final else None}
-        return {
-            "verdict": v, "best": best, "tested": tested, "luck_bar": bar, "min_trades": min_trades,
-            "split1": split1, "split2": split2, "shortlist": len(short), "passed_oos": len(passed),
-            "finalists": [{**describe_rule(d["rule"]), "dev": d["eval"]} for d in dev_runs],
-            "leaderboard": [row(r) for r in short[:15]],
-            "full": full,
-        }
-    finally:
-        if ex is not None:
-            ex.shutdown(wait=False, cancel_futures=True)
+    best = None
+    full = None
+    v = "none"
+    if winner is not None:
+        progress("final", 93.0, "Final sınavı: kazanan kural hiç görülmemiş son dönemde test ediliyor")
+        final = call(full_sim, winner["rule"], split2, end, False, symbols)
+        full = call(full_sim, winner["rule"], start, end, True, symbols)
+        fast = fast_by[rule_key(winner["rule"])]
+        v = verdict(final["eval"], winner["eval"], fast["is"]["t_stat"], bar)
+        best = {**row(fast), "dev": winner["eval"], "final": final["eval"]}
+    return {
+        "verdict": v, "best": best, "tested": tested, "luck_bar": bar, "min_trades": min_trades,
+        "shortlist": len(short), "passed_oos": len(passed),
+        "finalists": [{**describe_rule(d["rule"]), "dev": d["eval"]} for d in dev_runs],
+        "leaderboard": [row(r) for r in short[:15]],
+        "full": full,
+    }

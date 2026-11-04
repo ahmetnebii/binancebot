@@ -1,8 +1,8 @@
 import clsx from 'clsx';
-import { AlertTriangle, CheckCircle2, FlaskConical, Loader2, Rocket, ShieldCheck, Square, Trophy, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, FlaskConical, FlaskRound, Loader2, Rocket, ShieldCheck, Square, Trophy, XCircle } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { api, withToast } from '../../api/client';
-import type { LabJob, LabResult, LabRow, LabStats } from '../../api/types';
+import type { LabGroup, LabJob, LabResult, LabRow, LabStats } from '../../api/types';
 import { useAsync, useNow } from '../../lib/hooks';
 import { fmtDate, fmtDateTime, fmtDuration, fmtNum, fmtPct, fmtR, pnlClass } from '../../lib/format';
 import { toast, useApp } from '../../store/app';
@@ -15,11 +15,24 @@ const pctU = (v: number | null | undefined) => (isNum(v) ? fmtPct(v / 100, { sig
 const nf = (n: number) => n.toLocaleString('tr-TR');
 
 const BUDGETS = [
-  { value: 'hizli', label: 'Hızlı', n: 2000, hint: '~3-10 dk' },
-  { value: 'normal', label: 'Normal', n: 10000, hint: '~10-30 dk' },
-  { value: 'derin', label: 'Derin', n: 30000, hint: '~30-90 dk' },
-  { value: 'maksimum', label: 'Maksimum', n: 100000, hint: '~1,5-5 saat' },
+  { value: 'hizli', label: 'Hızlı', n: 2000 },
+  { value: 'normal', label: 'Normal', n: 10000 },
+  { value: 'derin', label: 'Derin', n: 30000 },
+  { value: 'maksimum', label: 'Maksimum', n: 100000 },
 ] as const;
+
+/** Kaba süre tahmini: 30 coin · 1 yıl · 6 çekirdekte kural başına ~0,05 sn (ölçülmüş); uzun geçmişte 4 işçi. */
+function estimate(n: number, days: number, grouped: boolean): string {
+  const workers = days > 400 ? 4 : 6;
+  const perRule = 0.25 * (days / 365); // sn, 30 coin, tek çekirdek
+  const rules = grouped ? n * 3 : n;
+  // gruplu: 3 grup × (coinlerin üçte biri) ≈ tek kuralla aynı toplam iş
+  const sec = (rules * perRule) / workers / (grouped ? 3 : 1) + 120 + (days > 400 ? 900 : 0);
+  const lo = sec * 0.6;
+  const hi = sec * 1.6;
+  const f = (x: number) => (x < 3600 ? `${Math.max(1, Math.round(x / 60))} dk` : `${(x / 3600).toFixed(1).replace('.', ',')} saat`);
+  return `~${f(lo)} – ${f(hi)}`;
+}
 
 const VERDICT: Record<LabResult['verdict'], { title: string; icon: JSX.Element; cls: string }> = {
   recommended: { title: 'Avantajlı kural bulundu', icon: <CheckCircle2 className="h-5 w-5 text-up" />, cls: 'border-up/30 bg-up/[0.06]' },
@@ -46,9 +59,7 @@ function StageRow({ name, sub, s, strong }: { name: string; sub: string; s: LabS
   );
 }
 
-function Stages({ r }: { r: LabResult }) {
-  const b = r.best;
-  const p = r.period;
+function Stages({ b, p }: { b: LabRow | null | undefined; p: LabResult['period'] }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[640px] text-[12px]">
@@ -140,52 +151,56 @@ function Running({ job, onCancel, cancelling }: { job: LabJob; onCancel: () => v
           <div className="h-full rounded-full bg-accent transition-[width] duration-500" style={{ width: `${pct}%` }} />
         </div>
       </div>
-      <p className="text-[11.5px] text-subtle">Sayfayı kapatabilirsin; arama sunucuda sürer. Bilgisayarı uyku moduna alma ve bot penceresini kapatma.</p>
+      <p className="text-[11.5px] text-subtle">Sayfayı kapatabilirsin; arama sunucuda sürer. Bilgisayarı uyku moduna alma ve bot penceresini kapatma. İlk 3 yıllık aramada veri indirme ~20-30 dk sürer (sonra önbellekten gelir).</p>
     </div>
   );
 }
 
-function ResultPanel({ job, onApply, applying }: { job: LabJob; onApply: () => void; applying: boolean }) {
-  const r = job.result!;
-  const v = VERDICT[r.verdict];
-  const b = r.best;
+function normalize(r: LabResult): LabGroup[] {
+  if (r.groups) return r.groups;
+  return [
+    {
+      key: 'all', name: 'Tüm coinler', symbols: [], verdict: r.verdict, verdict_text: r.verdict_text, forward_ok: false,
+      tested: r.tested, luck_bar: r.luck_bar ?? 0, min_trades: 0, shortlist: r.shortlist ?? 0, passed_oos: r.passed_oos ?? 0,
+      best: r.best ?? null, finalists: r.finalists ?? [], leaderboard: r.leaderboard ?? [], full: r.full ?? null,
+    },
+  ];
+}
+
+function GroupView({ g, p }: { g: LabGroup; p: LabResult['period'] }) {
+  const v = VERDICT[g.verdict];
+  const b = g.best;
   return (
     <div className="space-y-4">
       <div className={clsx('flex flex-wrap items-start gap-3 rounded-xl border px-4 py-3', v.cls)}>
         {v.icon}
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[14px] font-semibold text-fg">{v.title}</span>
+            <span className="text-[13.5px] font-semibold text-fg">{v.title}</span>
             {b && <Badge tone="accent">{b.label}</Badge>}
-            {job.applied_at && (
-              <Badge tone="up">
-                <ShieldCheck className="mr-1 inline h-3 w-3" />
-                Uygulandı
-              </Badge>
-            )}
+            {g.verdict === 'none' && g.forward_ok && <Badge tone="proj">simülasyonda denemeye değer</Badge>}
           </div>
-          <p className="mt-1 text-[12.5px] text-muted">{r.verdict_text}</p>
+          <p className="mt-1 text-[12px] text-muted">{g.verdict_text}</p>
           <p className="mt-1 text-[11.5px] text-subtle">
-            {nf(r.tested)} kural denendi → {r.shortlist} güçlü aday → {r.passed_oos} tanesi doğrulamada da kârlı → {r.finalists.length} finalist
-            gerçekçi simülasyonda · şans çıtası t ≈ {fmtNum(r.luck_bar, 2)} · {fmtDateTime(job.finished_at)}
+            {nf(g.tested)} kural → {g.shortlist} güçlü aday → {g.passed_oos} doğrulamada kârlı → {g.finalists.length} finalist · şans çıtası t ≈{' '}
+            {fmtNum(g.luck_bar, 2)}
           </p>
+          {g.symbols.length > 0 && (
+            <p className="mt-1 text-[11px] text-subtle">
+              Coinler: {g.symbols.slice(0, 14).map((x) => x.replace('USDT', '')).join(', ')}
+              {g.symbols.length > 14 ? ` +${g.symbols.length - 14}` : ''}
+            </p>
+          )}
         </div>
-        {r.verdict !== 'none' && b && (
-          <Button variant="success" icon={<Rocket className="h-4 w-4" />} onClick={onApply} loading={applying}>
-            Bu kuralı uygula
-          </Button>
-        )}
       </div>
 
       {b && (
         <div className="rounded-xl border border-line px-4 py-3">
-          <div className="label mb-1.5 flex items-center gap-1">
-            <Trophy className="h-3.5 w-3.5" /> Bulunan kural
-            {isNum(b.is.t_stat) && (
-              <span className={clsx('ml-2 normal-case', b.is.t_stat >= r.luck_bar ? 'text-up' : 'text-warn')}>
-                eğitim t = {fmtNum(b.is.t_stat, 2)} {b.is.t_stat >= r.luck_bar ? '≥' : '<'} şans çıtası {fmtNum(r.luck_bar, 2)}
-              </span>
-            )}
+          <div className="label mb-1.5 flex flex-wrap items-center gap-1">
+            <Trophy className="h-3.5 w-3.5" /> {g.key === 'all' ? 'Bulunan kural' : `${g.name} için bulunan kural`}
+            <span className={clsx('ml-2 normal-case', b.is.t_stat >= g.luck_bar ? 'text-up' : 'text-warn')}>
+              eğitim t = {fmtNum(b.is.t_stat, 2)} {b.is.t_stat >= g.luck_bar ? '≥' : '<'} şans çıtası {fmtNum(g.luck_bar, 2)}
+            </span>
           </div>
           <ul className="space-y-1 text-[12.5px] text-fg">
             {b.details.map((d) => (
@@ -195,19 +210,88 @@ function ResultPanel({ job, onApply, applying }: { job: LabJob; onApply: () => v
         </div>
       )}
 
-      {b && <Stages r={r} />}
+      {b && <Stages b={b} p={p} />}
 
-      {r.full && r.full.equity?.length > 1 && (
+      {g.full && g.full.equity?.length > 1 && (
         <div>
           <div className="label mb-1.5 flex items-center gap-1">
             Bu kuralla tüm dönem özsermaye (gerçekçi simülasyon)
             <InfoTip>Eğitim + doğrulama + final sınavı birlikte. Karar yalnızca final sınavına göre verilir.</InfoTip>
           </div>
-          <EquityDrawdownChart data={r.full.equity} initial={r.full.summary.initial_equity} height={260} />
+          <EquityDrawdownChart data={g.full.equity} initial={g.full.summary.initial_equity} height={240} />
         </div>
       )}
 
-      <Leaderboard rows={r.leaderboard} />
+      <Leaderboard rows={g.leaderboard} />
+    </div>
+  );
+}
+
+function ResultPanel({
+  job,
+  onApply,
+  applying,
+}: {
+  job: LabJob;
+  onApply: (mode: 'live' | 'paper') => void;
+  applying: 'live' | 'paper' | null;
+}) {
+  const r = job.result!;
+  const groups = normalize(r);
+  const [tab, setTab] = useState<string>(groups[0]?.key ?? 'all');
+  const g = groups.find((x) => x.key === tab) ?? groups[0];
+  const v = VERDICT[r.verdict];
+  const canLive = groups.some((x) => x.best && x.verdict !== 'none');
+  const canPaper = groups.some((x) => x.best && (x.forward_ok || x.verdict !== 'none'));
+  return (
+    <div className="space-y-4">
+      <div className={clsx('flex flex-wrap items-start gap-3 rounded-xl border px-4 py-3', canLive ? v.cls : canPaper ? 'border-proj/30 bg-proj/[0.06]' : v.cls)}>
+        {canLive ? v.icon : canPaper ? <FlaskRound className="h-5 w-5 text-proj" /> : v.icon}
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[14px] font-semibold text-fg">{canLive ? v.title : canPaper ? 'Umut verici aday var (kanıt yetersiz)' : v.title}</span>
+            {job.applied_at && (
+              <Badge tone="up">
+                <ShieldCheck className="mr-1 inline h-3 w-3" />
+                {job.applied_mode === 'paper' ? 'Simülasyonda deneniyor' : 'Uygulandı'}
+              </Badge>
+            )}
+          </div>
+          <p className="mt-1 text-[12.5px] text-muted">{r.verdict_text}</p>
+          <p className="mt-1 text-[11.5px] text-subtle">
+            Toplam {nf(r.tested)} kural · {Math.round((r.period.end - r.period.start) / 86_400_000)} günlük geçmiş · {fmtDateTime(job.finished_at)}
+          </p>
+        </div>
+        <div className="flex flex-col gap-2">
+          {canLive && (
+            <Button variant="success" icon={<Rocket className="h-4 w-4" />} onClick={() => onApply('live')} loading={applying === 'live'}>
+              Doğrulanan kuralları uygula
+            </Button>
+          )}
+          {canPaper && (
+            <Button variant="secondary" icon={<FlaskRound className="h-4 w-4" />} onClick={() => onApply('paper')} loading={applying === 'paper'}>
+              Simülasyonda canlı dene
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {groups.length > 1 && (
+        <Segmented
+          value={tab}
+          onChange={setTab}
+          options={groups.map((x) => ({
+            value: x.key,
+            label: (
+              <span className="flex items-center gap-1.5">
+                <span className={clsx('h-1.5 w-1.5 rounded-full', x.verdict === 'recommended' ? 'bg-up' : x.verdict === 'weak' ? 'bg-warn' : x.forward_ok ? 'bg-proj' : 'bg-down')} />
+                {x.name}
+              </span>
+            ),
+          }))}
+        />
+      )}
+      {g && <GroupView g={g} p={r.period} />}
 
       <ul className="space-y-1 text-[11.5px] text-subtle">
         {r.warnings.map((w) => (
@@ -223,11 +307,12 @@ function ResultPanel({ job, onApply, applying }: { job: LabJob; onApply: () => v
 
 export function StrategyLab({ blocked, onApplied }: { blocked: boolean; onApplied: () => void }) {
   const jobsMap = useApp((s) => s.backtestJobs);
-  const [days, setDays] = useState('365');
+  const [days, setDays] = useState('1095');
   const [budget, setBudget] = useState<string>('derin');
+  const [grouped, setGrouped] = useState<'single' | 'groups'>('groups');
   const [busy, setBusy] = useState(false);
   const [cancelling, setCancelling] = useState(false);
-  const [applying, setApplying] = useState(false);
+  const [applying, setApplying] = useState<'live' | 'paper' | null>(null);
   const { confirm, node } = useConfirm();
 
   const list = useAsync<LabJob[]>(
@@ -252,7 +337,7 @@ export function StrategyLab({ blocked, onApplied }: { blocked: boolean; onApplie
   const start = async () => {
     setBusy(true);
     try {
-      const j = await withToast(api.runLab({ days: Number(days), top_n: 30, budget }), 'Laboratuvar başlatılamadı');
+      const j = await withToast(api.runLab({ days: Number(days), top_n: 30, budget, grouped: grouped === 'groups' }), 'Laboratuvar başlatılamadı');
       useApp.getState().upsertBacktestJob(j as never);
       toast.success('Laboratuvar başladı — bitince sonuç burada görünecek');
     } catch {
@@ -274,34 +359,39 @@ export function StrategyLab({ blocked, onApplied }: { blocked: boolean; onApplie
     }
   };
 
-  const apply = async () => {
+  const apply = async (mode: 'live' | 'paper') => {
     const r = shown?.result;
-    if (!shown || !r?.best) return;
+    if (!shown || !r) return;
+    const groups = normalize(r).filter((g) => g.best && (mode === 'live' ? g.verdict !== 'none' : g.forward_ok || g.verdict !== 'none'));
     const ok = await confirm({
-      title: 'Bulunan kural uygulansın mı?',
+      title: mode === 'live' ? 'Doğrulanan kurallar uygulansın mı?' : 'Kurallar Simülasyon’da canlı denensin mi?',
       message:
-        'Doğrulanan, bu kuralın TEK BAŞINA çalışmasıdır: S1–S5 stratejileri kapatılır, canlı tarama yalnızca bu kuralla fırsat arar. İstediğin zaman Ayarlar’dan geri açabilirsin.',
+        mode === 'live'
+          ? 'Doğrulanan, bu kuralların TEK BAŞINA çalışmasıdır: S1–S5 kapatılır ve canlı tarama her coin için kendi grubunun kuralıyla fırsat arar.'
+          : 'Kurallar DENEME olarak uygulanır: fırsatlar görünür ama otomatik işlem yalnızca Simülasyon ortamında (sanal parayla) açılır. Birkaç hafta sonra Geçmiş sayfasında gerçek sonuçları görürsün. S1–S5 kapatılır ki sonuç yalnızca bu kuralları ölçsün.',
       details: (
         <ul className="space-y-0.5 text-[12px]">
-          {r.best.details.map((d) => (
-            <li key={d}>• {d}</li>
+          {groups.map((g) => (
+            <li key={g.key}>
+              • <b>{g.name}:</b> {g.best!.label}
+            </li>
           ))}
         </ul>
       ),
-      confirmText: 'Uygula',
+      confirmText: mode === 'live' ? 'Uygula' : 'Simülasyonda başlat',
       tone: 'success',
     });
     if (!ok) return;
-    setApplying(true);
+    setApplying(mode);
     try {
-      await withToast(api.applyLab(shown.id), 'Kural uygulanamadı');
-      toast.success('Kural uygulandı — tarama artık bu kuralla çalışıyor');
+      await withToast(api.applyLab(shown.id, mode), 'Kural uygulanamadı');
+      toast.success(mode === 'live' ? 'Kurallar uygulandı — tarama artık bu kurallarla çalışıyor' : 'Simülasyonda canlı deneme başladı');
       full.reload();
       onApplied();
     } catch {
       /* toast */
     } finally {
-      setApplying(false);
+      setApplying(null);
     }
   };
 
@@ -327,8 +417,26 @@ export function StrategyLab({ blocked, onApplied }: { blocked: boolean; onApplie
                 value={days}
                 onChange={setDays}
                 options={[
-                  { value: '180', label: '180 gün' },
-                  { value: '365', label: '365 gün' },
+                  { value: '365', label: '1 yıl' },
+                  { value: '730', label: '2 yıl' },
+                  { value: '1095', label: '3 yıl' },
+                ]}
+              />
+            </div>
+            <div>
+              <div className="label mb-1 flex items-center gap-1">
+                Yöntem
+                <InfoTip>
+                  Coin grupları: coinler eğitim dönemindeki hacim ve oynaklıklarına göre 3 gruba ayrılır (büyükler, orta oynaklık, yüksek
+                  oynaklık) ve her gruba ayrı kural aranır. Tek tek coin yerine grup kullanılır çünkü tek coinde veri, güvenilir sonuç için yetmez.
+                </InfoTip>
+              </div>
+              <Segmented
+                value={grouped}
+                onChange={setGrouped}
+                options={[
+                  { value: 'groups', label: 'Coin grupları' },
+                  { value: 'single', label: 'Tek kural' },
                 ]}
               />
             </div>
@@ -336,7 +444,7 @@ export function StrategyLab({ blocked, onApplied }: { blocked: boolean; onApplie
               <div className="label mb-1 flex items-center gap-1">
                 Kural sayısı{' '}
                 <span className="normal-case text-subtle">
-                  ({sel ? `${nf(sel.n)} kural · ${sel.hint}` : ''})
+                  ({sel ? `${nf(sel.n)} kural${grouped === 'groups' ? ' × 3 grup' : ''} · ${estimate(sel.n, Number(days), grouped === 'groups')}` : ''})
                 </span>
               </div>
               <Segmented value={budget} onChange={setBudget} options={BUDGETS.map((b) => ({ value: b.value, label: b.label }))} />
@@ -348,7 +456,7 @@ export function StrategyLab({ blocked, onApplied }: { blocked: boolean; onApplie
           </div>
         )}
 
-        {!running && shown?.status === 'done' && shown.result && <ResultPanel job={shown} onApply={apply} applying={applying} />}
+        {!running && shown?.status === 'done' && shown.result && <ResultPanel key={shown.id} job={shown} onApply={apply} applying={applying} />}
         {!running && shown?.status === 'done' && !shown.result && full.loading && (
           <div className="flex items-center gap-2 text-[12px] text-muted">
             <Loader2 className="h-3.5 w-3.5 animate-spin" /> Sonuç yükleniyor…

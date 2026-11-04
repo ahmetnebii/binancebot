@@ -451,10 +451,16 @@ Süreç: dönem %60 eğitim / %20 doğrulama / %20 final sınavı. Keşif (%70 r
 
 | Metot | Yol | Gövde | Yanıt |
 |---|---|---|---|
-| POST | `/api/backtest/lab` | `{days?: 90–365 (365), top_n?: 10–60 (30), budget?}` | `LabJob` (`kind: "lab"`, id `lab_…`) |
+| POST | `/api/backtest/lab` | `{days?: 90–1095 (365), top_n?: 10–60 (30), budget?, grouped?: bool}` | `LabJob` (`kind: "lab"`, id `lab_…`) |
 | GET | `/api/backtest/lab/jobs` | — | `LabJob[]` |
 | GET | `/api/backtest/jobs/{id}` | — | `result: {verdict, verdict_text, period{start,split1,split2,end}, tested, luck_bar, shortlist, passed_oos, best{label, details, rule, is, oos, dev, final}, finalists[], leaderboard[], full, calibration, data_source, warnings}` |
-| POST | `/api/backtest/lab/{id}/apply` | — | Kural `strategies.lab_rule`'a yazılır, `lab_enabled=true`, S1–S5 kapatılır, kalibrasyon güncellenir |
+| POST | `/api/backtest/lab/{id}/apply` | `{mode?: "live" \| "paper"}` | `live`: yalnızca doğrulanmış (recommended/weak) gruplar; `paper`: dört aşamada da kârlı adaylar DENEME olarak (otomatik işlem yalnızca Simülasyon ortamında). Tek grupta `lab_rule`, gruplu sonuçta `lab_groups` yazılır; S1–S5 kapatılır |
+
+**Coin grubu bazlı arama (`grouped: true`, ≥20 sembol):** coinler YALNIZCA eğitim dönemindeki verilerine göre 3 gruba ayrılır: `big` (hacimce ilk ~%20, en az 4), `mid` / `high` (kalanlar saatlik getiri oynaklığının medyanına göre). Her gruba ayrı arama yapılır (her grubun kendi şans çıtası, kendi final sınavı). Sonuç: `result.groups[] = {key, name, symbols, vol_min, vol_max, verdict, verdict_text, forward_ok, tested, luck_bar, best, finalists, leaderboard, full, calibration}`. Canlıda listede olmayan yeni bir coin, 1 saatlik oynaklığına göre `mid`/`high` grubuna atanır. Tek tek coin bazında kural aranmaz: coin başına işlem sayısı güvenilir doğrulama için yetmez.
+
+**Karar:** final sınavında ≥15 işlem, beklenti ≥0,10R, PF ≥1,3 ve şans çıtası geçildiyse `recommended`; ≥0,05R / PF ≥1,1 ise `weak`; final getirisi ≤0 ise her durumda `none`. `forward_ok`: dört aşamanın hepsinde pozitif beklenti ve finalde ≥5 işlem (simülasyonda denemeye değer).
+
+Geçmiş 3 yıla kadar çıkabilir; ilk indirme ~20–30 dk sürer, sonra `data/history` önbelleğinden gelir. 400 günden uzun aramalarda en fazla 4 işçi ve işçi başına ~350 MB gösterge önbelleği kullanılır.
 
 Kural canlıda S6 olarak çalışır (`strategies/lab_rules.py`); hızlı tarama, portföy simülasyonu ve canlı tarama aynı sinyal kodunu kullanır. S6 varsayılan EV eşiğinden ve çıkış profilinden muaftır (kendi doğrulanmış çıkışını kullanır).
 

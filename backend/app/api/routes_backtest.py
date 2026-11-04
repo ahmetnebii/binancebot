@@ -86,9 +86,14 @@ async def optimize_apply(job_id: str, request: Request) -> dict:
 
 
 class LabIn(BaseModel):
-    days: Optional[int] = Field(default=None, ge=90, le=365)
+    days: Optional[int] = Field(default=None, ge=90, le=1095)
     top_n: Optional[int] = Field(default=None, ge=10, le=60)
     budget: Optional[str] = None
+    grouped: Optional[bool] = None
+
+
+class LabApplyIn(BaseModel):
+    mode: str = Field(default="live", pattern="^(live|paper)$")
 
 
 @router.post("/lab")
@@ -107,9 +112,9 @@ async def lab_jobs(request: Request) -> list[dict]:
 
 
 @router.post("/lab/{job_id}/apply")
-async def lab_apply(job_id: str, request: Request) -> dict:
+async def lab_apply(job_id: str, request: Request, body: Optional[LabApplyIn] = None) -> dict:
     try:
-        return await manager(request).apply_lab(job_id)
+        return await manager(request).apply_lab(job_id, (body or LabApplyIn()).mode)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 

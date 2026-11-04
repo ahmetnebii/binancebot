@@ -156,17 +156,62 @@ def _vol_z(qv: np.ndarray, n: int = 96) -> np.ndarray:
     return out
 
 
-class Ind:
-    """Bir sembol + zaman dilimi için gösterge önbelleği."""
+class ByteLRU:
+    """Bayt sınırlı LRU önbellek: uzun geçmişte işçi belleğinin şişmesini önler."""
 
-    def __init__(self, a: dict[str, np.ndarray]):
+    def __init__(self, max_bytes: int):
+        from collections import OrderedDict
+        self.max_bytes = max_bytes
+        self.used = 0
+        self._d: "OrderedDict[tuple, tuple[Any, int]]" = OrderedDict()
+
+    @staticmethod
+    def _size(v: Any) -> int:
+        if isinstance(v, np.ndarray):
+            return v.nbytes
+        if isinstance(v, tuple):
+            return sum(x.nbytes for x in v if isinstance(x, np.ndarray))
+        return 64
+
+    def get(self, k: tuple) -> Any:
+        item = self._d.get(k)
+        if item is None:
+            return None
+        self._d.move_to_end(k)
+        return item[0]
+
+    def put(self, k: tuple, v: Any) -> None:
+        size = self._size(v)
+        self._d[k] = (v, size)
+        self.used += size
+        while self.used > self.max_bytes and len(self._d) > 1:
+            _, (_, sz) = self._d.popitem(last=False)
+            self.used -= sz
+
+
+class Ind:
+    """Bir sembol + zaman dilimi için gösterge önbelleği (isteğe bağlı paylaşılan LRU ile)."""
+
+    def __init__(self, a: dict[str, np.ndarray], cache: Optional[ByteLRU] = None, prefix: tuple = ()):
         self.a = a
         self.c = np.asarray(a["c"], dtype=float)
         self._m: dict[tuple, np.ndarray] = {}
+        self._lru = cache
+        self._prefix = prefix
 
     def get(self, key: tuple) -> Any:
-        if key in self._m:
-            return self._m[key]
+        if self._lru is not None:
+            v = self._lru.get(self._prefix + key)
+            if v is not None:
+                return v
+            v = self._compute(key)
+            self._lru.put(self._prefix + key, v)
+            return v
+        if key not in self._m:
+            self._m[key] = self._compute(key)
+        return self._m[key]
+
+    def _compute(self, key: tuple) -> Any:
         a, c = self.a, self.c
         name = key[0]
         if name == "ema":
@@ -204,7 +249,6 @@ class Ind:
             v = _rolling(np.where(np.isnan(ap), 0.0, ap), 100, "mean")
         else:
             raise KeyError(key)
-        self._m[key] = v
         return v
 
 
@@ -372,15 +416,62 @@ def describe_rule(rule: dict) -> dict:
 
 
 # --- canlı / simülasyon stratejisi ---------------------------------------------------------
+GROUP_TR = {"all": "Tüm coinler", "big": "Büyük coinler", "mid": "Orta oynaklıklı altcoinler", "high": "Yüksek oynaklıklı coinler"}
+
+
+def hourly_vol(c1h: np.ndarray) -> float:
+    """1 saatlik log getirilerin standart sapması (coin gruplamasında kullanılan oynaklık ölçüsü)."""
+    c = np.asarray(c1h, float)
+    c = c[np.isfinite(c) & (c > 0)]
+    if len(c) < 30:
+        return float("nan")
+    return float(np.std(np.diff(np.log(c))))
+
+
+def group_for(symbol: str, groups: list[dict], vol: Optional[float] = None) -> Optional[dict]:
+    """Sembolün grubu: önce açık listeler, yoksa oynaklık eşiğine göre (büyükler yalnızca listeden)."""
+    for g in groups:
+        if symbol in g.get("symbols", []):
+            return g
+    if vol is None or not math.isfinite(vol):
+        return None
+    for g in groups:
+        if g.get("key") in ("big",):
+            continue
+        lo, hi = g.get("vol_min"), g.get("vol_max")
+        if (lo is None or vol > lo) and (hi is None or vol <= hi):
+            return g
+    return None
+
+
+def rule_due(rule: dict, scan_tf: str, now_ms_: int) -> bool:
+    """Bu tarama anında kuralın zaman dilimi kapanışı mı? (4 saatlik: 1 saatlik taramada 4s sınırı)."""
+    ltf = rule.get("tf")
+    if ltf == scan_tf:
+        return True
+    return ltf == "4h" and scan_tf == "1h" and (now_ms_ % TF_MS["4h"]) < 10 * 60_000
+
+
 class LabRule:
     code = "S6"
     name = "Lab"
 
-    def __init__(self) -> None:
-        self._btc_cache: tuple[int, float] = (-1, 0.0)
+    def rule_for(self, symbol: str, ctx: StrategyContext) -> tuple[Optional[dict], Optional[dict]]:
+        """(kural, grup) — gruplu kurulumda sembolün grubunun kuralı, yoksa tek kural."""
+        st = ctx.settings
+        groups = getattr(st, "lab_groups", None)
+        if groups:
+            g = group_for(symbol, groups)
+            if g is None:
+                b = ctx.arrays(symbol, "1h", 120)
+                g = group_for(symbol, groups, hourly_vol(b["c"][-200:]) if b is not None else None)
+            return (g["rule"], g) if g else (None, None)
+        rule = getattr(st, "lab_rule", None)
+        return (rule, None) if rule else (None, None)
 
-    def evaluate(self, symbol: str, ctx: StrategyContext) -> Optional[Signal]:
-        rule = getattr(ctx.settings, "lab_rule", None)
+    def evaluate(self, symbol: str, ctx: StrategyContext, rule: Optional[dict] = None, group: Optional[dict] = None) -> Optional[Signal]:
+        if rule is None:
+            rule, group = self.rule_for(symbol, ctx)
         if not rule:
             return None
         tf = rule["tf"]
@@ -429,11 +520,19 @@ class LabRule:
             at1 = float(atr(a1["h"], a1["l"], a1["c"], 14)[-1]) if a1 is not None else float("nan")
             trail = trail * at / at1 if math.isfinite(at1) and at1 > 0 else trail * 2.0
         d = describe_rule(rule)
+        paper_only = bool((group or {}).get("paper_only") if group else getattr(ctx.settings, "lab_paper_only", False))
+        gname = GROUP_TR.get((group or {}).get("key", "all"), "")
+        reasons = ["Strateji Laboratuvarı'nda binlerce kural arasından seçilip görülmemiş veride doğrulanan kural"]
+        if group:
+            reasons.append(f"Coin grubu: {gname} — bu gruba özel bulunan kural")
+        warnings = ["Deneme kuralı: yalnızca Simülasyon'da otomatik işlenir (kanıt toplanıyor)"] if paper_only else []
+        feats = {"atr_pct": at / close * 100.0}
+        if paper_only:
+            feats["paper_only"] = 1.0
         return make_signal(
             symbol=symbol, side=side, strategy=self.code, strategy_name=f"Lab: {d['label']}", timeframe=sig_tf,
             bar_time=int(a["t"][-1]), now=ctx.now, ttl_ms=max(ctx.scanner.signal_ttl_min, 30 * tf_mult) * 60_000,
             entry=close, stop=stop, tp_spec=tp_spec, atr_value=at, score=70.0,
-            reasons=["Strateji Laboratuvarı'nda binlerce kural arasından seçilip görülmemiş veride doğrulanan kural"] + d["details"],
-            warnings=[], features={"atr_pct": at / close * 100.0},
+            reasons=reasons + d["details"], warnings=warnings, features=feats,
             trailing_atr_mult=round(trail, 2) if trail else None, time_stop_bars=int(rule["time_bars"]) * tf_mult,
         )

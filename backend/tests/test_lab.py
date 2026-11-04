@@ -116,18 +116,77 @@ def test_luck_bar_and_verdict():
     assert lab.verdict(good, dev_ok, is_t=3.0, bar=4.3) == "weak"  # şans çıtasının altında
     assert lab.verdict(good, {"expectancy_r": -0.01}, is_t=9.0, bar=4.3) == "none"
     assert lab.verdict({"trades": 40, "expectancy_r": 0.01, "profit_factor": 1.02}, dev_ok, 9.0, 4.3) == "none"
+    # beklenti pozitif ama portföy getirisi negatif (örn. komisyon/boyutlama) → avantaj yok
+    assert lab.verdict({**good, "return_pct": -0.6}, dev_ok, is_t=9.0, bar=4.3) == "none"
+    assert lab.verdict({**good, "return_pct": 4.0}, dev_ok, is_t=9.0, bar=4.3) == "recommended"
+
+
+def _base(syms):
+    return {"symbols": syms, "initial_equity": 1000.0, "slippage_bps": 3.0, "taker_fee": 0.0005, "maker_fee": 0.0002,
+            "strategies": StrategySettings().model_dump(), "risk": RiskSettings().model_dump(),
+            "scanner": ScannerSettings().model_dump()}
 
 
 def test_run_lab_end_to_end(hist, monkeypatch):
     syms, start, end, data = hist
     monkeypatch.setitem(lab.BUDGETS, "test", 80)
-    base = {"symbols": syms, "initial_equity": 1000.0, "slippage_bps": 3.0, "taker_fee": 0.0005, "maker_fee": 0.0002,
-            "strategies": StrategySettings().model_dump(), "risk": RiskSettings().model_dump(),
-            "scanner": ScannerSettings().model_dump()}
     msgs = []
-    out = lab.run_lab(data, {}, base, start, end, "test", lambda p, pct, m: msgs.append(pct), lambda: False)
-    assert out["tested"] == 80 and out["verdict"] in ("recommended", "weak", "none")
+    out = lab.run_lab(data, {}, _base(syms), start, end, "test", lambda p, pct, m: msgs.append(pct), lambda: False)
+    assert len(out["groups"]) == 1 and out["groups"][0]["key"] == "all"
+    g = out["groups"][0]
+    assert g["tested"] == 80 and g["verdict"] in ("recommended", "weak", "none") and out["verdict"] == g["verdict"]
     assert out["split1"] < out["split2"] < end and msgs == sorted(msgs)
-    if out["best"]:
-        b = out["best"]
-        assert b["final"] is not None and b["dev"]["trades"] > 0 and out["full"] is not None
+    if g["best"]:
+        assert g["best"]["final"] is not None and g["best"]["dev"]["trades"] > 0 and g["full"] is not None
+        assert g["forward_ok"] == lab.forward_ok(g["best"])
+
+
+def test_make_groups_uses_training_period_only():
+    syms = [s[0] for s in SPECS][:24]
+    end = now_ms()
+    end -= end % 900_000
+    start = end - 60 * 86_400_000
+    data = asyncio.run(SyntheticHistory().load(syms, start - 12 * 86_400_000, end, lambda f, m: None, lambda: False))
+    split1 = start + int((end - start) * 0.6)
+    groups = lab.make_groups(data, syms, start, split1)
+    assert [g["key"] for g in groups] == ["big", "mid", "high"]
+    allg = sum((g["symbols"] for g in groups), [])
+    assert sorted(allg) == sorted(s for s in syms if s in data.bars) and len(set(allg)) == len(allg)
+    assert groups[1]["vol_max"] == groups[2]["vol_min"]
+    # sonraki dönemi bozmak gruplamayı değiştirmemeli (gelecek bilgisi yok)
+    for s in syms:
+        a = data.bars[s]
+        m = a["t"] >= split1
+        a["qv"][m] *= 1000.0
+        a["c"][m] *= np.linspace(1, 3, int(m.sum()))
+    assert lab.make_groups(data, syms, start, split1) == groups
+
+
+def test_group_for_and_paper_only_signal():
+    from app.strategies.lab_rules import group_for
+    groups = [
+        {"key": "big", "symbols": ["BTCUSDT"], "vol_min": None, "vol_max": None},
+        {"key": "mid", "symbols": ["ADAUSDT"], "vol_min": None, "vol_max": 0.01},
+        {"key": "high", "symbols": ["PEPEUSDT"], "vol_min": 0.01, "vol_max": None},
+    ]
+    assert group_for("BTCUSDT", groups)["key"] == "big"
+    assert group_for("NEWUSDT", groups, 0.005)["key"] == "mid"
+    assert group_for("NEWUSDT", groups, 0.03)["key"] == "high"
+    assert group_for("NEWUSDT", groups, None) is None
+
+
+def test_byte_lru_caps_memory():
+    from app.strategies.lab_rules import ByteLRU
+    c = ByteLRU(10_000)
+    for i in range(50):
+        c.put(("k", i), np.zeros(500))  # 4 KB
+    assert c.used <= 10_000 and c.get(("k", 49)) is not None and c.get(("k", 0)) is None
+
+
+def test_forward_ok():
+    pos = {"expectancy_r": 0.1, "trades": 8}
+    neg = {"expectancy_r": -0.1, "trades": 8}
+    assert lab.forward_ok({"is": pos, "oos": pos, "dev": pos, "final": pos})
+    assert not lab.forward_ok({"is": pos, "oos": neg, "dev": pos, "final": pos})
+    assert not lab.forward_ok({"is": pos, "oos": pos, "dev": pos, "final": {"expectancy_r": 0.5, "trades": 3}})
+    assert not lab.forward_ok(None)

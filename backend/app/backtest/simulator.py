@@ -560,12 +560,14 @@ class Backtester:
                     sig = self.s4.evaluate(s, ctx)
                     if sig:
                         found.append(sig)
-            lab_rule = cfg.strategies.lab_rule if cfg.lab else None
-            if lab_rule:
-                ltf = lab_rule.get("tf")
-                if ltf == "15m" or (ltf == "1h" and hour_close) or (ltf == "4h" and close_t % H4 == 0):
-                    for s in bars_now:
-                        sig = self.lab.evaluate(s, ctx)
+            if cfg.lab and (cfg.strategies.lab_rule or cfg.strategies.lab_groups):
+                for s in bars_now:
+                    rule, grp = self.lab.rule_for(s, ctx)
+                    if not rule:
+                        continue
+                    ltf = rule.get("tf")
+                    if ltf == "15m" or (ltf == "1h" and hour_close) or (ltf == "4h" and close_t % H4 == 0):
+                        sig = self.lab.evaluate(s, ctx, rule, grp)
                         if sig:
                             found.append(sig)
             if cfg.s5 and hour_close:

@@ -549,6 +549,8 @@ export interface StrategySettings {
   s5_sides?: StrategySides;
   lab_enabled?: boolean;
   lab_rule?: Record<string, unknown> | null;
+  lab_paper_only?: boolean;
+  lab_groups?: { key: string; symbols: string[]; label?: string; paper_only?: boolean; rule: Record<string, unknown> }[] | null;
   regime_filter?: 'normal' | 'strict';
   funding_max?: number;
   exit_profile?: 'standard' | 'runner' | 'quick';
@@ -683,10 +685,13 @@ export interface LabRow {
   final?: LabStats | null;
 }
 
-export interface LabResult {
+export interface LabGroup {
+  key: 'all' | 'big' | 'mid' | 'high';
+  name: string;
+  symbols: string[];
   verdict: 'recommended' | 'weak' | 'none';
   verdict_text: string;
-  period: { start: number; split1: number; split2: number; end: number };
+  forward_ok: boolean;
   tested: number;
   luck_bar: number;
   min_trades: number;
@@ -696,6 +701,23 @@ export interface LabResult {
   finalists: { label: string; details: string[]; dev: LabStats }[];
   leaderboard: LabRow[];
   full: BacktestResult | null;
+}
+
+export interface LabResult {
+  verdict: 'recommended' | 'weak' | 'none';
+  verdict_text: string;
+  grouped?: boolean;
+  period: { start: number; split1: number; split2: number; end: number };
+  tested: number;
+  groups?: LabGroup[];
+  // eski (tek kurallı) sonuç biçimi
+  luck_bar?: number;
+  shortlist?: number;
+  passed_oos?: number;
+  best?: LabRow | null;
+  finalists?: LabGroup['finalists'];
+  leaderboard?: LabRow[];
+  full?: BacktestResult | null;
   data_source: 'binance' | 'synthetic';
   warnings: string[];
 }
@@ -703,7 +725,8 @@ export interface LabResult {
 export interface LabJob extends Omit<BacktestJob, 'result' | 'summary' | 'config' | 'kind'> {
   kind: 'lab';
   applied_at?: number | null;
-  config: { days: number; top_n: number; symbols: string[]; budget: string; candidates: number };
+  applied_mode?: 'live' | 'paper';
+  config: { days: number; top_n: number; symbols: string[]; budget: string; candidates: number; grouped?: boolean };
   summary: { verdict: LabResult['verdict']; label: string | null; tested: number } | null;
   result?: LabResult;
 }

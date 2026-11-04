@@ -160,10 +160,11 @@ export const api = {
   runOptimize: (cfg: { days?: number; top_n?: number; budget?: string }) => request<OptimizeJob>('POST', '/api/backtest/optimize', cfg),
   optimizeJobs: () => request<OptimizeJob[]>('GET', '/api/backtest/optimize/jobs'),
   optimizeJob: (id: string) => request<OptimizeJob>('GET', `/api/backtest/jobs/${encodeURIComponent(id)}`),
-  runLab: (cfg: { days?: number; top_n?: number; budget?: string }) => request<LabJob>('POST', '/api/backtest/lab', cfg),
+  runLab: (cfg: { days?: number; top_n?: number; budget?: string; grouped?: boolean }) => request<LabJob>('POST', '/api/backtest/lab', cfg),
   labJobs: () => request<LabJob[]>('GET', '/api/backtest/lab/jobs'),
   labJob: (id: string) => request<LabJob>('GET', `/api/backtest/jobs/${encodeURIComponent(id)}`),
-  applyLab: (id: string) => request<{ ok: boolean; label: string; calibrated: boolean }>('POST', `/api/backtest/lab/${encodeURIComponent(id)}/apply`),
+  applyLab: (id: string, mode: 'live' | 'paper') =>
+    request<{ ok: boolean; mode: string; groups: string[]; calibrated: boolean }>('POST', `/api/backtest/lab/${encodeURIComponent(id)}/apply`, { mode }),
   applyOptimize: (id: string) => request<{ ok: boolean; calibrated: boolean }>('POST', `/api/backtest/optimize/${encodeURIComponent(id)}/apply`),
   resetCalibration: () => request<Calibration>('DELETE', '/api/backtest/calibration'),
 

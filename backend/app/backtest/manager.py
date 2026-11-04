@@ -468,26 +468,31 @@ class BacktestManager:
 
     # --- Strateji Laboratuvarı ------------------------------------------------
     LAB_VERDICT_TEXT = {
-        "recommended": "Binlerce kural arasından seçilen kural, aramada HİÇ kullanılmamış final sınavı döneminde de kâr etti ve şans çıtasını geçti. Uygulanması önerilir.",
+        "recommended": "Seçilen kural, aramada HİÇ kullanılmamış final sınavı döneminde de kâr etti ve şans çıtasını geçti. Uygulanması önerilir.",
         "weak": "Final sınavında hafif kârlı bir kural bulundu ama kanıt güçlü değil (kâr küçük ya da şans çıtasının altında). Uygularsan Simülasyon'da izle.",
-        "none": "Binlerce kural denendi; hiçbiri eğitim, doğrulama ve final sınavının hepsinde tutarlı kâr etmedi. Bu veride gerçek bir avantaj bulunamadı; gerçek parayla otomatik işlem önerilmez.",
+        "none": "Binlerce kural denendi; hiçbiri eğitim, doğrulama ve final sınavının hepsinde yeterli kanıtla kâr etmedi.",
     }
 
     async def run_lab_job(self, body: dict[str, Any]) -> dict:
         if self._task is not None and not self._task.done():
             raise BacktestBusy("Zaten çalışan bir test, optimizasyon veya laboratuvar araması var; bitmesini bekleyin veya iptal edin")
         days = int(body.get("days") or 365)
-        if not 90 <= days <= 365:
-            raise ValueError("Laboratuvar için süre 90 ile 365 gün arasında olmalı")
+        if not 90 <= days <= 1095:
+            raise ValueError("Laboratuvar için süre 90 ile 1095 gün (3 yıl) arasında olmalı")
         top_n = int(body.get("top_n") or 30)
         if not 10 <= top_n <= 60:
             raise ValueError("Sembol sayısı 10 ile 60 arasında olmalı")
         budget = str(body.get("budget") or "normal")
         if budget not in LAB_BUDGETS:
             raise ValueError("Derinlik hizli, normal, derin veya maksimum olmalı")
-        cfg = self._resolve_config({"days": days, "top_n": top_n, "strategies": {"s1": True}})
+        grouped = bool(body.get("grouped", False))
+        if grouped and top_n < 20:
+            raise ValueError("Coin grubu bazlı arama için en az 20 sembol gerekli")
+        cfg = self._resolve_config({"days": min(days, 365), "top_n": top_n, "strategies": {"s1": True}})
+        cfg["days"] = days
         cfg["budget"] = budget
         cfg["candidates"] = LAB_BUDGETS[budget]
+        cfg["grouped"] = grouped
         job = {
             "id": new_id("lab"), "kind": "lab", "created_at": now_ms(), "finished_at": None,
             "status": "queued", "progress": {"phase": "data", "pct": 0.0, "message": "Sırada"},
@@ -524,49 +529,69 @@ class BacktestManager:
                 "symbols": cfg["symbols"], "initial_equity": cfg["initial_equity"], "slippage_bps": cfg["slippage_bps"],
                 "taker_fee": cfg["taker_fee"], "maker_fee": cfg["maker_fee"],
                 "strategies": store.strategies.model_dump(), "risk": store.risk.model_dump(), "scanner": store.scanner.model_dump(),
+                "cache_mb": 500 if cfg["days"] <= 400 else 350,  # uzun geçmişte veri büyür, önbellek küçülür
             }
             loop = asyncio.get_running_loop()
 
             def prog(phase: str, pct: float, msg: str) -> None:
                 loop.call_soon_threadsafe(self._set_progress, job, phase, 10.0 + pct * 0.9, msg)
 
-            out = await asyncio.to_thread(run_lab, data, infos, base, start, end, cfg["budget"], prog, self._cancel.is_set)
-            full_result = None
-            if out["full"] is not None:
-                warnings = ["Sentetik geliştirme verisi kullanıldı."] if data.source == "synthetic" else []
-                full_result = await asyncio.to_thread(
-                    build_result, out["full"]["raw"], initial_equity=cfg["initial_equity"], start_ms=start, end_ms=end,
-                    source=data.source, extra_warnings=warnings,
-                )
+            out = await asyncio.to_thread(
+                run_lab, data, infos, base, start, end, cfg["budget"], prog, self._cancel.is_set, 20261103, cfg.get("grouped", False),
+            )
+            groups = []
+            for g in out["groups"]:
+                full_result = None
+                if g["full"] is not None:
+                    warnings = ["Sentetik geliştirme verisi kullanıldı."] if data.source == "synthetic" else []
+                    full_result = await asyncio.to_thread(
+                        build_result, g["full"]["raw"], initial_equity=cfg["initial_equity"], start_ms=start, end_ms=end,
+                        source=data.source, extra_warnings=warnings,
+                    )
+                groups.append({
+                    "key": g["key"], "name": g["name"], "symbols": g["symbols"], "vol_min": g["vol_min"], "vol_max": g["vol_max"],
+                    "verdict": g["verdict"], "verdict_text": self.LAB_VERDICT_TEXT[g["verdict"]], "forward_ok": g["forward_ok"],
+                    "tested": g["tested"], "luck_bar": g["luck_bar"], "min_trades": g["min_trades"],
+                    "shortlist": g["shortlist"], "passed_oos": g["passed_oos"], "best": g["best"],
+                    "finalists": g["finalists"], "leaderboard": g["leaderboard"], "full": full_result,
+                    "calibration": (full_result or {}).get("calibration", {}),
+                })
+            tested = sum(g["tested"] for g in groups)
             warnings = [
                 "Dönem üçe bölündü: eğitim %60 (arama), doğrulama %20 (eleme), final sınavı %20 (aramada hiç görülmedi).",
-                f"Şans çıtası: {out['tested']:,} denemede saf şansla görülebilecek en yüksek t-değeri ≈ {out['luck_bar']:.2f}.".replace(",", "."),
+                "Şans çıtası: N denemede saf şansla görülebilecek en yüksek t-değeri ≈ √(2·ln N); her grup için ayrı hesaplanır.",
                 "Geçmişte çalışan kural gelecekte de çalışacak diye garanti yoktur; uygulamadan sonra Simülasyon'da izleyin.",
             ]
+            if cfg.get("grouped"):
+                warnings.insert(1, "Coinler yalnızca eğitim dönemindeki hacim ve oynaklıklarına göre gruplandı; her gruba ayrı kural arandı.")
             if data.source == "synthetic":
                 warnings.insert(0, "Sentetik geliştirme verisi kullanıldı: sonuçlar gerçek piyasayı yansıtmaz.")
+            n_ok = sum(1 for g in groups if g["verdict"] != "none")
+            n_fw = sum(1 for g in groups if g["forward_ok"])
+            if out["verdict"] != "none":
+                vtext = self.LAB_VERDICT_TEXT[out["verdict"]] if len(groups) == 1 else f"{len(groups)} grubun {n_ok} tanesinde doğrulanmış kural bulundu."
+            elif n_fw:
+                vtext = (f"Kanıt henüz yeterli değil, ama {n_fw} grupta dört aşamanın hepsinde kârlı aday var. "
+                         "Gerçek parayla değil, Simülasyon'da canlı denemeye değer.")
+            else:
+                vtext = self.LAB_VERDICT_TEXT["none"] + " Bu veride gerçek bir avantaj bulunamadı; gerçek parayla otomatik işlem önerilmez."
             result = {
-                "verdict": out["verdict"], "verdict_text": self.LAB_VERDICT_TEXT[out["verdict"]],
+                "verdict": out["verdict"], "verdict_text": vtext, "grouped": bool(cfg.get("grouped")),
                 "period": {"start": start, "split1": out["split1"], "split2": out["split2"], "end": end},
-                "tested": out["tested"], "luck_bar": out["luck_bar"], "min_trades": out["min_trades"],
-                "shortlist": out["shortlist"], "passed_oos": out["passed_oos"],
-                "best": out["best"], "finalists": out["finalists"], "leaderboard": out["leaderboard"],
-                "full": full_result, "calibration": (full_result or {}).get("calibration", {}),
+                "tested": tested, "workers": out["workers"], "groups": groups,
                 "data_source": data.source, "warnings": warnings,
             }
-            b = out["best"]
             job["status"] = "done"
             job["finished_at"] = now_ms()
             job["summary"] = {
-                "verdict": out["verdict"], "label": b["label"] if b else None, "tested": out["tested"],
-                "final_expectancy_r": (b.get("final") or {}).get("expectancy_r") if b else None,
-                "final_profit_factor": (b.get("final") or {}).get("profit_factor") if b else None,
+                "verdict": out["verdict"], "tested": tested, "groups": len(groups), "ok_groups": n_ok, "forward_groups": n_fw,
+                "label": next((g["best"]["label"] for g in groups if g["best"]), None),
             }
             job["progress"] = {"phase": "done", "pct": 100.0, "message": "Tamamlandı"}
             await self.ctx.db.bt_save(job, result)
             await self.ctx.events.log(
                 "success" if out["verdict"] != "none" else "warning", "lab",
-                f"Strateji Laboratuvarı tamamlandı: {result['verdict_text']}", toast=True, title="Strateji Laboratuvarı",
+                f"Strateji Laboratuvarı tamamlandı: {vtext}", toast=True, title="Strateji Laboratuvarı",
             )
         except (BacktestCancelled, asyncio.CancelledError):
             job["status"] = "cancelled"
@@ -582,33 +607,55 @@ class BacktestManager:
         finally:
             self._publish(job, force=True)
 
-    async def apply_lab(self, job_id: str) -> dict:
+    async def apply_lab(self, job_id: str, mode: str = "live") -> dict:
+        """mode="live": yalnızca doğrulanmış (önerilen/zayıf) grupları uygular.
+        mode="paper": dört aşamada da kârlı adayları DENEME kuralı olarak uygular (yalnızca Simülasyon'da işlenir)."""
         job = await self.ctx.db.bt_get(job_id)
         if job is None or job.get("kind") != "lab" or job.get("status") != "done" or "result" not in job:
             raise ValueError("Tamamlanmış bir laboratuvar araması bulunamadı")
         res = job["result"]
-        if res.get("verdict") == "none" or not res.get("best"):
-            raise ValueError("Bu arama uygulanabilir bir kural bulamadı")
         if res.get("data_source") == "synthetic" and not self.ctx.synthetic:
             raise ValueError("Sentetik veriyle yapılmış arama gerçek sisteme uygulanamaz")
-        rule = res["best"]["rule"]
-        store = self.ctx.store
-        # Doğrulanan, kuralın TEK BAŞINA çalışmasıdır: diğer stratejiler kapatılır
-        await store.update("strategies", {
-            "lab_enabled": True, "lab_rule": rule, "s1_enabled": False, "s2_enabled": False,
+        groups = res.get("groups")
+        if groups is None:  # eski tek-kurallı sonuç biçimi
+            groups = [{"key": "all", "symbols": [], "vol_min": None, "vol_max": None, "verdict": res.get("verdict"),
+                       "best": res.get("best"), "forward_ok": False, "calibration": res.get("calibration") or {}}]
+        if mode == "paper":
+            chosen = [g for g in groups if g.get("best") and (g.get("forward_ok") or g.get("verdict") != "none")]
+            if not chosen:
+                raise ValueError("Simülasyonda denenecek, dört aşamada da kârlı bir aday yok")
+        else:
+            chosen = [g for g in groups if g.get("best") and g.get("verdict") != "none"]
+            if not chosen:
+                raise ValueError("Bu arama doğrulanmış bir kural bulamadı; istersen 'Simülasyonda canlı dene' ile deneyebilirsin")
+        paper_only = mode == "paper"
+        patch: dict[str, Any] = {
+            "lab_enabled": True, "s1_enabled": False, "s2_enabled": False,
             "s3_enabled": False, "s4_enabled": False, "s5_enabled": False,
-        })
-        cal = res.get("calibration") or {}
+        }
+        if len(chosen) == 1 and chosen[0]["key"] == "all":
+            patch.update(lab_rule=chosen[0]["best"]["rule"], lab_groups=None, lab_paper_only=paper_only)
+        else:
+            patch.update(lab_rule=None, lab_paper_only=False, lab_groups=[{
+                "key": g["key"], "symbols": g["symbols"], "vol_min": g.get("vol_min"), "vol_max": g.get("vol_max"),
+                "rule": g["best"]["rule"], "label": g["best"]["label"],
+                "paper_only": paper_only or g.get("verdict") == "none",
+            } for g in chosen])
+        store = self.ctx.store
+        await store.update("strategies", patch)
+        cal: dict = {}
+        if len(chosen) == 1:
+            cal = chosen[0].get("calibration") or {}
         if cal:
             doc = {"source_job": job_id, "applied_at": now_ms(), "strategies": cal}
             await self.ctx.db.kv_set("calibration", doc, now_ms())
             if self.ctx.engine:
                 self.ctx.engine.set_calibration(cal)
         job["applied_at"] = now_ms()
+        job["applied_mode"] = mode
         await self.ctx.db.bt_save(job)
         self._publish(job, force=True)
-        await self.ctx.events.log(
-            "success", "lab", f"Laboratuvar kuralı uygulandı: {res['best']['label']}; canlı tarama artık bu kuralla fırsat arıyor",
-            toast=True, title="Kural uygulandı",
-        )
-        return {"ok": True, "label": res["best"]["label"], "calibrated": bool(cal)}
+        labels = ", ".join(g["best"]["label"] for g in chosen)
+        what = "Simülasyon'da canlı deneme başladı" if paper_only else "canlı tarama artık bu kurallarla fırsat arıyor"
+        await self.ctx.events.log("success", "lab", f"Laboratuvar kuralları uygulandı ({labels}); {what}", toast=True, title="Kural uygulandı")
+        return {"ok": True, "mode": mode, "groups": [g["key"] for g in chosen], "calibrated": bool(cal)}

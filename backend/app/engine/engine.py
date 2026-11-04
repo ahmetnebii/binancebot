@@ -25,7 +25,7 @@ from ..risk.sizing import approx_liq_price, symbol_class
 from ..settings import SettingsStore
 from ..strategies.base import StrategyContext, apply_exit_profile, passes_filters
 from ..strategies.mean_reversion import MeanReversion
-from ..strategies.lab_rules import LabRule
+from ..strategies.lab_rules import LabRule, rule_due
 from ..strategies.patterns import ChartPatterns
 from ..strategies.trend_follow import TrendFollow, is_4h_close
 from ..strategies.rs_rotation import RSRotation
@@ -310,11 +310,6 @@ class Engine:
             hourly.append(self.s4)
         if tf == "1h" and self.store.strategies.s5_enabled:
             hourly.append(self.s5)
-        lab_rule = self.store.strategies.lab_rule if self.store.strategies.lab_enabled else None
-        if lab_rule:
-            ltf = lab_rule.get("tf")
-            if (ltf == tf) or (ltf == "4h" and tf == "1h" and is_4h_close(ctx.now)):
-                hourly.append(self.lab)
         for strat in hourly:
             for sym in universe:
                 if sym in self.store.scanner.blacklist:
@@ -326,6 +321,20 @@ class Engine:
                     continue
                 if sig:
                     found.append(sig)
+            await asyncio.sleep(0)
+        stg = self.store.strategies
+        if stg.lab_enabled and (stg.lab_rule or stg.lab_groups):
+            for sym in universe:
+                if sym in self.store.scanner.blacklist:
+                    continue
+                try:
+                    rule, grp = self.lab.rule_for(sym, ctx)
+                    if rule and rule_due(rule, tf, ctx.now):
+                        sig = self.lab.evaluate(sym, ctx, rule, grp)
+                        if sig:
+                            found.append(sig)
+                except Exception:
+                    log.exception("S6 değerlendirme hatası (%s)", sym)
             await asyncio.sleep(0)
         if tf == "15m":
             per_bar = [s for s, on in ((self.s1, self.store.strategies.s1_enabled), (self.s3, self.store.strategies.s3_enabled)) if on]
@@ -544,6 +553,8 @@ class Engine:
             return False, "beklenti eşiğin altında"
         if self.regime.name == "CHAOS":
             return False, "aşırı oynaklık rejimi"
+        if sig.strategy == "S6" and sig.features.get("paper_only") and self.env != "paper":
+            return False, "deneme kuralı yalnızca Simülasyon'da otomatik işlenir"
         return True, ""
 
     def _corr(self, a: str, b: str) -> float:

@@ -1052,20 +1052,22 @@ function ScannerTab({ s, onSaved }: { s: SettingsView; onSaved: (v: SettingsView
           </div>
           <div className={clsx('rounded-xl border p-4 lg:col-span-2', st.lab_enabled ? 'border-accent/40 bg-accent/[0.05]' : 'border-line')}>
             <Toggle
-              checked={!!st.lab_enabled && !!st.lab_rule}
-              onChange={(v) => st.lab_rule && setSt({ ...st, lab_enabled: v })}
+              checked={!!st.lab_enabled && (!!st.lab_rule || !!st.lab_groups?.length)}
+              onChange={(v) => (st.lab_rule || st.lab_groups?.length) && setSt({ ...st, lab_enabled: v })}
               label={
                 <span className="flex items-center gap-2">
                   S6 · Laboratuvar kuralı <Badge tone="accent">otomatik bulunur</Badge>
                 </span>
               }
               description={
-                st.lab_rule
+                st.lab_groups?.length
+                  ? `Coin grubu bazlı kurallar: ${st.lab_groups.map((g) => `${g.key === 'big' ? 'Büyükler' : g.key === 'mid' ? 'Orta oynaklık' : g.key === 'high' ? 'Yüksek oynaklık' : 'Tümü'} → ${g.label ?? ''}${g.paper_only ? ' (deneme, yalnızca Simülasyon)' : ''}`).join(' · ')}`
+                  : st.lab_rule
                   ? `Backtest → Strateji Laboratuvarı'nda bulunup final sınavında doğrulanan kural (${String((st.lab_rule as Record<string, unknown>).tf ?? '')} · ${String(((st.lab_rule as Record<string, Record<string, unknown>>).entry ?? {}).type ?? '')}). Ayrıntılar Backtest sayfasında.`
                   : 'Henüz kural yok. Backtest → Strateji Laboratuvarı ile binlerce kombinasyon arasından en iyi kuralı buldurup tek tuşla uygulayabilirsin.'
               }
             />
-            {!st.lab_rule && (
+            {!st.lab_rule && !st.lab_groups?.length && (
               <Button size="sm" className="mt-3" onClick={() => navigate('/backtest')}>
                 Laboratuvara git
               </Button>
