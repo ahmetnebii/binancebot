@@ -346,7 +346,10 @@ def run_lab(
     cancelled: Callable[[], bool],
     seed: int = 20261103,
     grouped: bool = False,
+    mode: Optional[str] = None,
 ) -> dict:
+    """mode: "single" (tek kural), "groups" (3 coin grubu), "coins" (her coine ayrı kural)."""
+    mode = mode or ("groups" if grouped else "single")
     total = BUDGETS.get(budget, 5000)
     split1 = start + int((end - start) * 0.6)
     split2 = start + int((end - start) * 0.8)
@@ -354,9 +357,12 @@ def run_lab(
     # uzun geçmişte her işçi daha çok bellek tutar: işçi sayısını ona göre sınırla
     cap_workers = 6 if days <= 400 else 4
     workers = max(1, min(cap_workers, (os.cpu_count() or 2) - 1))
-    groups = make_groups(data, base["symbols"], start, split1) if grouped else [
-        {"key": "all", "symbols": [s for s in base["symbols"] if s in data.bars], "vol_min": None, "vol_max": None}
-    ]
+    if mode == "coins":
+        groups = [{"key": s, "symbols": [s], "vol_min": None, "vol_max": None} for s in base["symbols"] if s in data.bars]
+    elif mode == "groups":
+        groups = make_groups(data, base["symbols"], start, split1)
+    else:
+        groups = [{"key": "all", "symbols": [s for s in base["symbols"] if s in data.bars], "vol_min": None, "vol_max": None}]
 
     ex: Optional[ProcessPoolExecutor]
     try:
@@ -369,7 +375,7 @@ def run_lab(
     try:
         outs = []
         for gi, g in enumerate(groups):
-            name = GROUP_TR[g["key"]]
+            name = GROUP_TR.get(g["key"], g["key"])
             lo = gi * span
 
             def gprog(phase: str, pct: float, msg: str, lo: float = lo, name: str = name, gi: int = gi) -> None:

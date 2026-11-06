@@ -456,6 +456,17 @@ Süreç: dönem %60 eğitim / %20 doğrulama / %20 final sınavı. Keşif (%70 r
 | GET | `/api/backtest/jobs/{id}` | — | `result: {verdict, verdict_text, period{start,split1,split2,end}, tested, luck_bar, shortlist, passed_oos, best{label, details, rule, is, oos, dev, final}, finalists[], leaderboard[], full, calibration, data_source, warnings}` |
 | POST | `/api/backtest/lab/{id}/apply` | `{mode?: "live" \| "paper"}` | `live`: yalnızca doğrulanmış (recommended/weak) gruplar; `paper`: dört aşamada da kârlı adaylar DENEME olarak (otomatik işlem yalnızca Simülasyon ortamında). Tek grupta `lab_rule`, gruplu sonuçta `lab_groups` yazılır; S1–S5 kapatılır |
 
+**Yöntemler (`mode`):** `single` (tüm coinlere tek kural), `groups` (3 coin grubu), `coins` (her coine ayrı kural; 3–30 coin). Zaman dilimleri: 15m, 1h, 4h, **1d** (günlük; canlıda günlük mumlar her gün UTC 00:00 sonrası REST ile yenilenir). Her grup/coin için `full_summary` (tüm dönem getiri, düşüş, işlem, kazanma, PF) her zaman döner; arayüz bunu "Sonuç raporu" tablosu ve CSV olarak sunar.
+
+**Geçmiş veri önbelleği:**
+
+| Metot | Yol | Gövde | Yanıt |
+|---|---|---|---|
+| GET | `/api/backtest/data/status` | — | `{symbols, first, last, updated_at, size_mb}` |
+| POST | `/api/backtest/data/sync` | `{days?: 30–1095, top_n?: 3–60}` | `BacktestJob` (`kind: "data"`): mumları ve funding'i indirir / yalnızca yeni kısmı ekler |
+
+Laboratuvar araması önbelleği olduğu gibi kullanır (`update_tail=False`): ağdan yalnızca önbellekte hiç olmayan coin/dönem indirilir; önbellek eskiyse dönem eldeki son mumda biter. Her önbellek dosyası verinin hangi tarihten itibaren istendiğini (`req_from`) saklar; böylece seçilen dönemden yeni listelenmiş coinler her seferinde baştan indirilmez. Funding geçmişi de önbelleğe alınır.
+
 **Coin grubu bazlı arama (`grouped: true`, ≥20 sembol):** coinler YALNIZCA eğitim dönemindeki verilerine göre 3 gruba ayrılır: `big` (hacimce ilk ~%20, en az 4), `mid` / `high` (kalanlar saatlik getiri oynaklığının medyanına göre). Her gruba ayrı arama yapılır (her grubun kendi şans çıtası, kendi final sınavı). Sonuç: `result.groups[] = {key, name, symbols, vol_min, vol_max, verdict, verdict_text, forward_ok, tested, luck_bar, best, finalists, leaderboard, full, calibration}`. Canlıda listede olmayan yeni bir coin, 1 saatlik oynaklığına göre `mid`/`high` grubuna atanır. Tek tek coin bazında kural aranmaz: coin başına işlem sayısı güvenilir doğrulama için yetmez.
 
 **Karar:** final sınavında ≥15 işlem, beklenti ≥0,10R, PF ≥1,3 ve şans çıtası geçildiyse `recommended`; ≥0,05R / PF ≥1,1 ise `weak`; final getirisi ≤0 ise her durumda `none`. `forward_ok`: dört aşamanın hepsinde pozitif beklenti ve finalde ≥5 işlem (simülasyonda denemeye değer).

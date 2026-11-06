@@ -16,7 +16,7 @@ from ..exchange.filters import D, check_qty, floor_step, fmt, stop_price, tp_pri
 from ..exchange.paper import PaperBroker
 from ..features.indicators import atr, correlation, log_returns
 from ..features.regime import Regime, RegimeDetector
-from ..market.base import MarketData
+from ..market.base import CandleBuffer, MarketData
 from ..models import Candle, Position, Signal, SizingPlan, TakeProfit, side_sign
 from ..notify.telegram import TelegramNotifier, esc
 from ..paths import VERSION
@@ -97,6 +97,7 @@ class Engine:
         self.s4 = TrendFollow()
         self.s5 = ChartPatterns()
         self.lab = LabRule()
+        self._daily_day = -1
         self.calibration: dict = {}
         self._last_report_day: Optional[int] = None
         self.scanner: dict = {"last_scan_at": None, "next_scan_at": None, "scanned_symbols": 0}
@@ -324,6 +325,8 @@ class Engine:
             await asyncio.sleep(0)
         stg = self.store.strategies
         if stg.lab_enabled and (stg.lab_rule or stg.lab_groups):
+            if tf == "1h":
+                await self._refresh_daily(universe, ctx)
             for sym in universe:
                 if sym in self.store.scanner.blacklist:
                     continue
@@ -364,6 +367,34 @@ class Engine:
         ]
         for sig in found:
             await self._on_new_signal(sig)
+
+    async def _refresh_daily(self, universe: list[str], ctx: StrategyContext) -> None:
+        """Günlük grafik kullanan laboratuvar kuralları için günde bir kez günlük mumları REST ile yeniler."""
+        day = now_ms() // 86_400_000
+        if self._daily_day == day:
+            return
+        fetch = getattr(self.market, "_fetch_klines", None)
+        if fetch is None:
+            self._daily_day = day
+            return
+        need = []
+        for sym in universe:
+            rule, _ = self.lab.rule_for(sym, ctx)
+            if rule and rule.get("tf") == "1d":
+                need.append(sym)
+        ok = 0
+        for sym in need:
+            try:
+                candles = await fetch(sym, "1d", 250)
+                buf = CandleBuffer("1d", maxlen=300)
+                buf.load(candles)
+                self.market.buffers[(sym, "1d")] = buf
+                ok += 1
+            except Exception as exc:
+                log.warning("Günlük mumlar alınamadı %s: %s", sym, exc)
+        self._daily_day = day
+        if need:
+            log.info("Günlük mumlar yenilendi: %d/%d sembol", ok, len(need))
 
     # --- fırsatlar -------------------------------------------------------
     def _strategy_stats(self) -> dict:

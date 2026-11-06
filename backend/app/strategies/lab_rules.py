@@ -21,8 +21,9 @@ from ..models import Signal
 from ..util import TF_MS
 from .base import StrategyContext, make_signal
 
-TFS = ("15m", "1h", "4h")
-TF_TR = {"15m": "15 dakikalık", "1h": "1 saatlik", "4h": "4 saatlik"}
+TFS = ("15m", "1h", "4h", "1d")
+TF_TR = {"15m": "15 dakikalık", "1h": "1 saatlik", "4h": "4 saatlik", "1d": "günlük"}
+TF_WEIGHTS = [0.25, 0.3, 0.25, 0.2]
 MIN_STOP = 0.006
 MAX_STOP = 0.10
 
@@ -47,15 +48,20 @@ TP_FIXED = [1.0, 1.5, 2.0, 3.0]
 TP_TRAIL = [1.0, 1.5, 2.0]
 TRAILS = [2.0, 3.0, 4.0]
 TIME_BARS = [12, 24, 48, 96]
+TIME_BARS_1D = [5, 10, 20, 40]  # günlük grafikte gün cinsinden
+
+
+def time_choices(tf: str) -> list[int]:
+    return TIME_BARS_1D if tf == "1d" else TIME_BARS
 
 
 def long_period(tf: str) -> int:
-    """Uzun trend ortalaması: 4 saatlikte canlı tampon (≈120 mum) sınırı nedeniyle 50."""
-    return 50 if tf == "4h" else 200
+    """Uzun trend ortalaması; canlı tampon boyu sınırı: 4 saatlikte ≈120 mum (50), günlükte ≈250 mum (100)."""
+    return 50 if tf == "4h" else 100 if tf == "1d" else 200
 
 
 def _valid_entry(entry: dict, tf: str) -> bool:
-    if entry["type"] == "ema_cross" and tf == "4h" and entry["pair"][1] > 50:
+    if entry["type"] == "ema_cross" and tf in ("4h", "1d") and entry["pair"][1] > 50:
         return False
     if entry["type"] == "donchian" and tf == "4h" and entry["n"] > 40:
         return False
@@ -64,7 +70,7 @@ def _valid_entry(entry: dict, tf: str) -> bool:
 
 def random_rule(rng: random.Random) -> dict:
     while True:
-        tf = rng.choices(TFS, weights=[0.3, 0.4, 0.3])[0]
+        tf = rng.choices(TFS, weights=TF_WEIGHTS)[0]
         et = rng.choice(list(ENTRY_SPACE))
         entry: dict[str, Any] = {"type": et}
         for k, choices in ENTRY_SPACE[et].items():
@@ -82,7 +88,7 @@ def random_rule(rng: random.Random) -> dict:
         "tf": tf, "entry": entry, "filters": sorted(filters), "stop_atr": rng.choice(STOPS),
         "exit": {"mode": mode, "tp_r": rng.choice(TP_FIXED if mode == "fixed" else TP_TRAIL),
                  "trail_atr": rng.choice(TRAILS) if mode == "trail" else None},
-        "time_bars": rng.choice(TIME_BARS),
+        "time_bars": rng.choice(time_choices(tf)),
         "sides": rng.choices(["both", "long", "short"], weights=[0.4, 0.35, 0.25])[0],
     }
     return rule
@@ -113,7 +119,7 @@ def mutate(rule: dict, rng: random.Random) -> dict:
             r["exit"] = {"mode": mode, "tp_r": rng.choice(TP_FIXED if mode == "fixed" else TP_TRAIL),
                          "trail_atr": rng.choice(TRAILS) if mode == "trail" else None}
         elif what == "time":
-            r["time_bars"] = rng.choice(TIME_BARS)
+            r["time_bars"] = rng.choice(time_choices(r["tf"]))
         else:
             r["sides"] = rng.choice(["both", "long", "short"])
     if not _valid_entry(r["entry"], r["tf"]):
@@ -439,6 +445,8 @@ def group_for(symbol: str, groups: list[dict], vol: Optional[float] = None) -> O
         if g.get("key") in ("big",):
             continue
         lo, hi = g.get("vol_min"), g.get("vol_max")
+        if lo is None and hi is None:
+            continue  # yalnızca açık listeyle eşleşen grup (ör. coin bazlı kural)
         if (lo is None or vol > lo) and (hi is None or vol <= hi):
             return g
     return None
@@ -449,7 +457,13 @@ def rule_due(rule: dict, scan_tf: str, now_ms_: int) -> bool:
     ltf = rule.get("tf")
     if ltf == scan_tf:
         return True
-    return ltf == "4h" and scan_tf == "1h" and (now_ms_ % TF_MS["4h"]) < 10 * 60_000
+    if scan_tf != "1h":
+        return False
+    if ltf == "4h":
+        return (now_ms_ % TF_MS["4h"]) < 10 * 60_000
+    if ltf == "1d":
+        return (now_ms_ % TF_MS["1d"]) < 10 * 60_000
+    return False
 
 
 class LabRule:
@@ -483,6 +497,10 @@ class LabRule:
             a = aggregate_bars(a1, TF_MS["4h"])
             if len(a["c"]) < 60:
                 return None
+        elif tf == "1d":
+            a = ctx.arrays(symbol, "1d", 60)
+            if a is None:
+                return None
         else:
             a = ctx.arrays(symbol, tf, 250)
             if a is None:
@@ -512,16 +530,17 @@ class LabRule:
             tp_spec, trail = [(float(ex["tp_r"]), 1.0)], None
         else:
             tp_spec, trail = [(float(ex["tp_r"]), 0.5)], float(ex["trail_atr"])
-        tf_mult = 4 if tf == "4h" else 1
-        sig_tf = "1h" if tf == "4h" else tf
-        if trail is not None and tf == "4h":
+        tf_mult = 4 if tf == "4h" else 24 if tf == "1d" else 1
+        sig_tf = "1h" if tf in ("4h", "1d") else tf
+        if trail is not None and tf in ("4h", "1d"):
             # yönetim 1 saatlik mumlarla: aynı mesafe için çarpanı ATR oranıyla ölçekle
             a1 = ctx.arrays(symbol, "1h", 30)
             at1 = float(atr(a1["h"], a1["l"], a1["c"], 14)[-1]) if a1 is not None else float("nan")
             trail = trail * at / at1 if math.isfinite(at1) and at1 > 0 else trail * 2.0
         d = describe_rule(rule)
         paper_only = bool((group or {}).get("paper_only") if group else getattr(ctx.settings, "lab_paper_only", False))
-        gname = GROUP_TR.get((group or {}).get("key", "all"), "")
+        gkey = (group or {}).get("key", "all")
+        gname = GROUP_TR.get(gkey, gkey)
         reasons = ["Strateji Laboratuvarı'nda binlerce kural arasından seçilip görülmemiş veride doğrulanan kural"]
         if group:
             reasons.append(f"Coin grubu: {gname} — bu gruba özel bulunan kural")

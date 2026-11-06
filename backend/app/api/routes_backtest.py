@@ -87,9 +87,10 @@ async def optimize_apply(job_id: str, request: Request) -> dict:
 
 class LabIn(BaseModel):
     days: Optional[int] = Field(default=None, ge=90, le=1095)
-    top_n: Optional[int] = Field(default=None, ge=10, le=60)
+    top_n: Optional[int] = Field(default=None, ge=3, le=60)
     budget: Optional[str] = None
     grouped: Optional[bool] = None
+    mode: Optional[str] = Field(default=None, pattern="^(single|groups|coins)$")
 
 
 class LabApplyIn(BaseModel):
@@ -115,6 +116,26 @@ async def lab_jobs(request: Request) -> list[dict]:
 async def lab_apply(job_id: str, request: Request, body: Optional[LabApplyIn] = None) -> dict:
     try:
         return await manager(request).apply_lab(job_id, (body or LabApplyIn()).mode)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+class DataSyncIn(BaseModel):
+    days: Optional[int] = Field(default=None, ge=30, le=1095)
+    top_n: Optional[int] = Field(default=None, ge=3, le=60)
+
+
+@router.get("/data/status")
+async def data_status(request: Request) -> dict:
+    return manager(request).data_status()
+
+
+@router.post("/data/sync")
+async def data_sync(body: DataSyncIn, request: Request) -> dict:
+    try:
+        return await manager(request).run_data_sync(body.model_dump(exclude_none=True))
+    except BacktestBusy as exc:
+        raise HTTPException(409, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 

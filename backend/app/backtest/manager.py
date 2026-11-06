@@ -480,19 +480,27 @@ class BacktestManager:
         if not 90 <= days <= 1095:
             raise ValueError("Laboratuvar için süre 90 ile 1095 gün (3 yıl) arasında olmalı")
         top_n = int(body.get("top_n") or 30)
-        if not 10 <= top_n <= 60:
-            raise ValueError("Sembol sayısı 10 ile 60 arasında olmalı")
+        mode_req = str(body.get("mode") or ("groups" if body.get("grouped") else "single"))
+        lo_n = 3 if mode_req == "coins" else 10
+        if not lo_n <= top_n <= 60:
+            raise ValueError(f"Sembol sayısı {lo_n} ile 60 arasında olmalı")
         budget = str(body.get("budget") or "normal")
         if budget not in LAB_BUDGETS:
             raise ValueError("Derinlik hizli, normal, derin veya maksimum olmalı")
-        grouped = bool(body.get("grouped", False))
-        if grouped and top_n < 20:
+        mode = str(body.get("mode") or ("groups" if body.get("grouped") else "single"))
+        if mode not in ("single", "groups", "coins"):
+            raise ValueError("Yöntem single, groups veya coins olmalı")
+        if mode == "groups" and top_n < 20:
             raise ValueError("Coin grubu bazlı arama için en az 20 sembol gerekli")
+        if mode == "coins" and top_n > 30:
+            raise ValueError("Coin bazlı aramada en fazla 30 coin seçilebilir")
+        grouped = mode == "groups"
         cfg = self._resolve_config({"days": min(days, 365), "top_n": top_n, "strategies": {"s1": True}})
         cfg["days"] = days
         cfg["budget"] = budget
         cfg["candidates"] = LAB_BUDGETS[budget]
         cfg["grouped"] = grouped
+        cfg["mode"] = mode
         job = {
             "id": new_id("lab"), "kind": "lab", "created_at": now_ms(), "finished_at": None,
             "status": "queued", "progress": {"phase": "data", "pct": 0.0, "message": "Sırada"},
@@ -515,14 +523,21 @@ class BacktestManager:
             end = now_ms()
             end -= end % STEP
             start = end - cfg["days"] * 86_400_000
-            provider = SyntheticHistory() if self.ctx.synthetic else BinanceHistory(store.connection.live_rest, self.ctx.data_dir / "history")
+            provider = self._history()
+            # Strateji araması önbellekteki veriyi olduğu gibi kullanır; yalnızca önbellekte olmayan coin/dönem indirilir.
+            # Güncel veri için "Verileri indir / güncelle" ayrı çalıştırılır.
             data = await provider.load(
                 cfg["symbols"], start - WARMUP_MS, end,
                 progress=lambda f, m: self._set_progress(job, "data", f * 10.0, m),
-                cancelled=self._cancel.is_set,
+                cancelled=self._cancel.is_set, update_tail=False,
             )
             if "BTCUSDT" not in data.bars:
                 raise RuntimeError("BTCUSDT verisi alınamadı; rejim tespiti yapılamıyor")
+            # önbellek bugünden eskiyse dönem, eldeki son mumda biter (eksik günler boş sayılmasın)
+            last_bar = int(data.bars["BTCUSDT"]["t"][-1]) + STEP
+            if last_bar < end:
+                end = last_bar
+                start = end - cfg["days"] * 86_400_000
             eng = self.ctx.engine
             infos = {s: eng.market.symbols[s] for s in cfg["symbols"] if eng and s in eng.market.symbols}
             base = {
@@ -537,8 +552,10 @@ class BacktestManager:
                 loop.call_soon_threadsafe(self._set_progress, job, phase, 10.0 + pct * 0.9, msg)
 
             out = await asyncio.to_thread(
-                run_lab, data, infos, base, start, end, cfg["budget"], prog, self._cancel.is_set, 20261103, cfg.get("grouped", False),
+                run_lab, data, infos, base, start, end, cfg["budget"], prog, self._cancel.is_set, 20261103,
+                cfg.get("grouped", False), cfg.get("mode"),
             )
+            coins_mode = cfg.get("mode") == "coins"
             groups = []
             for g in out["groups"]:
                 full_result = None
@@ -548,12 +565,22 @@ class BacktestManager:
                         build_result, g["full"]["raw"], initial_equity=cfg["initial_equity"], start_ms=start, end_ms=end,
                         source=data.source, extra_warnings=warnings,
                     )
+                full_summary = None
+                if full_result is not None:
+                    fs = full_result["summary"]
+                    full_summary = {k: fs.get(k) for k in (
+                        "trades", "win_rate", "profit_factor", "expectancy_r", "total_return_pct", "max_drawdown_pct",
+                        "initial_equity", "final_equity", "avg_hold_hours", "fees_total",
+                    )}
+                    if coins_mode and g["verdict"] == "none" and not g["forward_ok"]:
+                        full_result = None  # coin bazlı modda boyutu küçük tut: elenen coinin grafiği saklanmaz, özeti saklanır
                 groups.append({
                     "key": g["key"], "name": g["name"], "symbols": g["symbols"], "vol_min": g["vol_min"], "vol_max": g["vol_max"],
                     "verdict": g["verdict"], "verdict_text": self.LAB_VERDICT_TEXT[g["verdict"]], "forward_ok": g["forward_ok"],
                     "tested": g["tested"], "luck_bar": g["luck_bar"], "min_trades": g["min_trades"],
                     "shortlist": g["shortlist"], "passed_oos": g["passed_oos"], "best": g["best"],
-                    "finalists": g["finalists"], "leaderboard": g["leaderboard"], "full": full_result,
+                    "finalists": g["finalists"], "leaderboard": g["leaderboard"][:5] if coins_mode else g["leaderboard"],
+                    "full": full_result, "full_summary": full_summary,
                     "calibration": (full_result or {}).get("calibration", {}),
                 })
             tested = sum(g["tested"] for g in groups)
@@ -564,19 +591,22 @@ class BacktestManager:
             ]
             if cfg.get("grouped"):
                 warnings.insert(1, "Coinler yalnızca eğitim dönemindeki hacim ve oynaklıklarına göre gruplandı; her gruba ayrı kural arandı.")
+            if coins_mode:
+                warnings.insert(1, "Her coine ayrı kural arandı. Tek coinde veri az olduğu için şans eseri iyi görünme riski yüksektir; "
+                                   "bu yüzden şans çıtası ve final sınavı her coin için ayrı uygulanır ve çoğu coinin elenmesi normaldir.")
             if data.source == "synthetic":
                 warnings.insert(0, "Sentetik geliştirme verisi kullanıldı: sonuçlar gerçek piyasayı yansıtmaz.")
             n_ok = sum(1 for g in groups if g["verdict"] != "none")
             n_fw = sum(1 for g in groups if g["forward_ok"])
             if out["verdict"] != "none":
-                vtext = self.LAB_VERDICT_TEXT[out["verdict"]] if len(groups) == 1 else f"{len(groups)} grubun {n_ok} tanesinde doğrulanmış kural bulundu."
+                vtext = self.LAB_VERDICT_TEXT[out["verdict"]] if len(groups) == 1 else f"{len(groups)} {'coinin' if coins_mode else 'grubun'} {n_ok} tanesinde doğrulanmış kural bulundu."
             elif n_fw:
-                vtext = (f"Kanıt henüz yeterli değil, ama {n_fw} grupta dört aşamanın hepsinde kârlı aday var. "
+                vtext = (f"Kanıt henüz yeterli değil, ama {n_fw} {'coinde' if coins_mode else 'grupta'} dört aşamanın hepsinde kârlı aday var. "
                          "Gerçek parayla değil, Simülasyon'da canlı denemeye değer.")
             else:
                 vtext = self.LAB_VERDICT_TEXT["none"] + " Bu veride gerçek bir avantaj bulunamadı; gerçek parayla otomatik işlem önerilmez."
             result = {
-                "verdict": out["verdict"], "verdict_text": vtext, "grouped": bool(cfg.get("grouped")),
+                "verdict": out["verdict"], "verdict_text": vtext, "grouped": bool(cfg.get("grouped")), "mode": cfg.get("mode", "single"),
                 "period": {"start": start, "split1": out["split1"], "split2": out["split2"], "end": end},
                 "tested": tested, "workers": out["workers"], "groups": groups,
                 "data_source": data.source, "warnings": warnings,
@@ -659,3 +689,75 @@ class BacktestManager:
         what = "Simülasyon'da canlı deneme başladı" if paper_only else "canlı tarama artık bu kurallarla fırsat arıyor"
         await self.ctx.events.log("success", "lab", f"Laboratuvar kuralları uygulandı ({labels}); {what}", toast=True, title="Kural uygulandı")
         return {"ok": True, "mode": mode, "groups": [g["key"] for g in chosen], "calibrated": bool(cal)}
+
+    # --- Geçmiş veri önbelleği ---------------------------------------------------
+    def _history(self):
+        if self.ctx.synthetic:
+            return SyntheticHistory()
+        return BinanceHistory(self.ctx.store.connection.live_rest, self.ctx.data_dir / "history")
+
+    def data_status(self) -> dict:
+        st = self._history().cache_status()
+        if self._job and self._job.get("kind") == "data" and self._job["status"] in ("queued", "running"):
+            st["running_job"] = self._job["id"]
+        return st
+
+    async def run_data_sync(self, body: dict[str, Any]) -> dict:
+        if self._task is not None and not self._task.done():
+            raise BacktestBusy("Çalışan bir iş var; bitmesini bekleyin veya iptal edin")
+        days = int(body.get("days") or 1095)
+        if not 30 <= days <= 1095:
+            raise ValueError("Süre 30 ile 1095 gün arasında olmalı")
+        top_n = int(body.get("top_n") or 30)
+        if not 3 <= top_n <= 60:
+            raise ValueError("Sembol sayısı 3 ile 60 arasında olmalı")
+        cfg = self._resolve_config({"days": min(days, 365), "top_n": top_n, "strategies": {"s1": True}})
+        cfg["days"] = days
+        job = {
+            "id": new_id("data"), "kind": "data", "created_at": now_ms(), "finished_at": None,
+            "status": "queued", "progress": {"phase": "data", "pct": 0.0, "message": "Sırada"},
+            "config": cfg, "error": None, "summary": None,
+        }
+        await self.ctx.db.bt_save(job)
+        self._cancel.clear()
+        self._job = job
+        self._publish(job, force=True)
+        self._task = asyncio.create_task(self._run_data_sync(job), name=f"data-{job['id']}")
+        return job
+
+    async def _run_data_sync(self, job: dict) -> None:
+        cfg = job["config"]
+        job["status"] = "running"
+        await self.ctx.db.bt_save(job)
+        self._publish(job, force=True)
+        try:
+            end = now_ms()
+            end -= end % STEP
+            start = end - cfg["days"] * 86_400_000
+            data = await self._history().load(
+                cfg["symbols"], start - WARMUP_MS, end,
+                progress=lambda f, m: self._set_progress(job, "data", f * 100.0, m),
+                cancelled=self._cancel.is_set, update_tail=True,
+            )
+            job["status"] = "done"
+            job["finished_at"] = now_ms()
+            job["summary"] = {"symbols": len(data.bars), "missing": data.missing, "days": cfg["days"]}
+            job["progress"] = {"phase": "done", "pct": 100.0, "message": "Tamamlandı"}
+            await self.ctx.db.bt_save(job)
+            await self.ctx.events.log(
+                "success", "data", f"Geçmiş veri güncellendi: {len(data.bars)} coin, {cfg['days']} gün"
+                + (f" ({len(data.missing)} coin alınamadı)" if data.missing else ""), toast=True, title="Veriler hazır",
+            )
+        except (BacktestCancelled, asyncio.CancelledError):
+            job["status"] = "cancelled"
+            job["finished_at"] = now_ms()
+            await self.ctx.db.bt_save(job)
+        except Exception as exc:
+            log.exception("Veri indirme hatası")
+            job["status"] = "failed"
+            job["finished_at"] = now_ms()
+            job["error"] = str(exc)
+            await self.ctx.db.bt_save(job)
+            await self.ctx.events.log("error", "data", f"Veri indirme başarısız: {exc}", toast=True, title="Veri hatası")
+        finally:
+            self._publish(job, force=True)

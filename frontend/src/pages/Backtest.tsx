@@ -284,10 +284,10 @@ function ConfigCard({ blocked, onStarted }: { blocked: BacktestJob | undefined; 
           {blocked ? (
             <Button
               variant="secondary"
-              onClick={() => (blocked.kind === 'optimize' || blocked.kind === 'lab' ? window.scrollTo({ top: 0, behavior: 'smooth' }) : navigate(`/backtest/${blocked.id}`))}
+              onClick={() => (blocked.kind === 'optimize' || blocked.kind === 'lab' || blocked.kind === 'data' ? window.scrollTo({ top: 0, behavior: 'smooth' }) : navigate(`/backtest/${blocked.id}`))}
               icon={<Loader2 className="h-4 w-4 animate-spin" />}
             >
-              {blocked.kind === 'lab' ? 'Laboratuvar çalışıyor' : blocked.kind === 'optimize' ? 'Ayar arama çalışıyor' : 'Bir test çalışıyor — izle'}
+              {blocked.kind === 'data' ? 'Veriler indiriliyor' : blocked.kind === 'lab' ? 'Laboratuvar çalışıyor' : blocked.kind === 'optimize' ? 'Ayar arama çalışıyor' : 'Bir test çalışıyor — izle'}
             </Button>
           ) : (
             <Button variant="primary" size="lg" icon={<Play className="h-4 w-4" />} onClick={run} loading={busy} disabled={noStrategy || unknown.length > 0}>
@@ -1223,7 +1223,7 @@ function JobView({ id, onCalibrationChanged }: { id: string; onCalibrationChange
 export function Backtest({ id }: { id?: string }) {
   const jobsMap = useApp((s) => s.backtestJobs);
   const allJobs = useMemo(() => Object.values(jobsMap).sort((a, b) => b.created_at - a.created_at), [jobsMap]);
-  const jobs = useMemo(() => allJobs.filter((j) => j.kind !== 'optimize' && j.kind !== 'lab'), [allJobs]);
+  const jobs = useMemo(() => allJobs.filter((j) => j.kind !== 'optimize' && j.kind !== 'lab' && j.kind !== 'data'), [allJobs]);
   const list = useAsync<BacktestJob[]>(
     () =>
       api.backtestJobs().then((l) => {

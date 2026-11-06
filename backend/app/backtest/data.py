@@ -12,7 +12,7 @@ import logging
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 import aiohttp
 import numpy as np
@@ -130,36 +130,68 @@ class BinanceHistory:
             cur = nxt
         return out
 
-    async def _load_symbol(self, session: aiohttp.ClientSession, symbol: str, start: int, end: int) -> dict[str, np.ndarray]:
+    # --- önbellek -----------------------------------------------------------
+    # Her dosya, verinin hangi tarihten itibaren İSTENDİĞİNİ de saklar ("req_from"). Böylece 3 yıldan yeni
+    # listelenmiş bir coinde "baş kısım eksik" sanılıp her seferinde baştan indirme yapılmaz.
+    def _read_cache(self, path: Path, fields: tuple[str, ...]) -> tuple[dict[str, np.ndarray], Optional[int]]:
+        if not path.exists():
+            return {k: np.array([], dtype=np.int64 if k == "t" else float) for k in fields}, None
+        try:
+            with np.load(path) as z:
+                data = {k: z[k] for k in fields}
+                req = int(z["req_from"][0]) if "req_from" in z.files else None
+            return data, req
+        except Exception:
+            return {k: np.array([], dtype=np.int64 if k == "t" else float) for k in fields}, None
+
+    @staticmethod
+    def _write_cache(path: Path, data: dict[str, np.ndarray], req_from: Optional[int]) -> None:
+        tmp = path.with_suffix(".tmp.npz")
+        extra = {"req_from": np.array([req_from if req_from is not None else -1], dtype=np.int64)}
+        np.savez_compressed(tmp, **data, **extra)
+        tmp.replace(path)
+
+    def _covers_start(self, cached_t: np.ndarray, req: Optional[int], start: int) -> bool:
+        if len(cached_t) and int(cached_t[0]) <= start + STEP:
+            return True
+        return req is not None and req >= 0 and req <= start
+
+    async def _load_symbol(self, session: aiohttp.ClientSession, symbol: str, start: int, end: int,
+                           update_tail: bool = True) -> dict[str, np.ndarray]:
         path = self.cache_dir / f"{symbol}_15m.npz"
-        cached = _empty()
-        if path.exists():
-            try:
-                with np.load(path) as z:
-                    cached = {k: z[k] for k in FIELDS}
-            except Exception:
-                cached = _empty()
+        cached, req = self._read_cache(path, FIELDS)
         have = len(cached["t"]) > 0
-        if have and int(cached["t"][0]) <= start + STEP and int(cached["t"][-1]) >= end - 2 * STEP:
+        head_ok = have and self._covers_start(cached["t"], req, start)
+        tail_ok = have and int(cached["t"][-1]) >= end - 2 * STEP
+        if head_ok and (tail_ok or not update_tail):
             return _slice(cached, start, end)
-        if have and int(cached["t"][0]) <= start + STEP:
+        new_req = min(start, req) if (req is not None and req >= 0) else start
+        if head_ok:
             fresh = await self._fetch_klines(session, symbol, int(cached["t"][-1]) + STEP, end)
             data = _merge(cached, fresh)
+            new_req = req if (req is not None and req >= 0) else int(cached["t"][0])
         else:
             data = await self._fetch_klines(session, symbol, start, end)
             if have:
                 data = _merge(data, cached)
         if len(data["t"]):
-            tmp = path.with_suffix(".tmp.npz")
-            np.savez_compressed(tmp, **data)
-            tmp.replace(path)
+            self._write_cache(path, data, new_req)
         return _slice(data, start, end)
 
-    async def _load_funding(self, session: aiohttp.ClientSession, symbol: str, start: int, end: int) -> tuple[np.ndarray, np.ndarray]:
+    async def _load_funding(self, session: aiohttp.ClientSession, symbol: str, start: int, end: int,
+                            update_tail: bool = True) -> tuple[np.ndarray, np.ndarray]:
+        path = self.cache_dir / f"{symbol}_funding.npz"
+        cached, req = self._read_cache(path, ("t", "r"))
+        have = len(cached["t"]) > 0
+        head_ok = have and self._covers_start(cached["t"], req, start + 8 * 3_600_000)
+        tail_ok = have and int(cached["t"][-1]) >= end - 9 * 3_600_000
+        if head_ok and (tail_ok or not update_tail):
+            m = (cached["t"] >= start) & (cached["t"] < end)
+            return cached["t"][m], cached["r"][m]
+        cur = int(cached["t"][-1]) + 1 if head_ok else start
         times: list[int] = []
         rates: list[float] = []
-        cur = start
-        for _ in range(20):
+        for _ in range(60):
             rows = await self._get(
                 session, "/fapi/v1/fundingRate", {"symbol": symbol, "startTime": cur, "endTime": end, "limit": 1000}, weight=1,
             )
@@ -171,17 +203,56 @@ class BinanceHistory:
             if len(rows) < 1000:
                 break
             cur = int(rows[-1]["fundingTime"]) + 1
-        return np.array(times, dtype=np.int64), np.array(rates, dtype=float)
+        t = np.concatenate([cached["t"], np.array(times, dtype=np.int64)]) if head_ok else np.array(times, dtype=np.int64)
+        r = np.concatenate([cached["r"], np.array(rates, dtype=float)]) if head_ok else np.array(rates, dtype=float)
+        if not head_ok and have:
+            t = np.concatenate([t, cached["t"]])
+            r = np.concatenate([r, cached["r"]])
+        order = np.argsort(t, kind="stable")
+        t, r = t[order], r[order]
+        keep = np.r_[t[1:] != t[:-1], True] if len(t) else np.array([], dtype=bool)
+        t, r = t[keep], r[keep]
+        new_req = min(start, req) if (req is not None and req >= 0) else start
+        if len(t):
+            self._write_cache(path, {"t": t, "r": r}, new_req)
+        m = (t >= start) & (t < end)
+        return t[m], r[m]
 
-    async def load(self, symbols: list[str], start: int, end: int, progress: Progress, cancelled: Cancelled) -> HistoryData:
+    def cache_status(self) -> dict:
+        """Önbellekteki geçmiş verinin özeti (arayüzdeki "Veri" satırı için)."""
+        files = sorted(self.cache_dir.glob("*_15m.npz"))
+        first, last, updated, size, n = None, None, None, 0, 0
+        for f in files:
+            try:
+                with np.load(f) as z:
+                    t = z["t"]
+                    if len(t) == 0:
+                        continue
+                    n += 1
+                    first = int(t[0]) if first is None else min(first, int(t[0]))
+                    last = int(t[-1]) if last is None else max(last, int(t[-1]))
+            except Exception:
+                continue
+            st = f.stat()
+            size += st.st_size
+            updated = int(st.st_mtime * 1000) if updated is None else max(updated, int(st.st_mtime * 1000))
+        for f in self.cache_dir.glob("*_funding.npz"):
+            size += f.stat().st_size
+        return {"symbols": n, "first": first, "last": (last + STEP) if last is not None else None,
+                "updated_at": updated, "size_mb": round(size / 1_048_576, 1)}
+
+    async def load(self, symbols: list[str], start: int, end: int, progress: Progress, cancelled: Cancelled,
+                   update_tail: bool = True) -> HistoryData:
+        """update_tail=False: önbellek başlangıcı kapsıyorsa ağa hiç çıkılmaz (strateji araması böyle çalışır)."""
         out = HistoryData(source="binance")
+        verb = "indiriliyor" if update_tail else "yükleniyor"
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             for i, sym in enumerate(symbols):
                 if cancelled():
                     raise BacktestCancelled()
-                progress(i / max(1, len(symbols)), f"{sym} mumları indiriliyor ({i + 1}/{len(symbols)})")
+                progress(i / max(1, len(symbols)), f"{sym} mumları {verb} ({i + 1}/{len(symbols)})")
                 try:
-                    bars = await self._load_symbol(session, sym, start, end)
+                    bars = await self._load_symbol(session, sym, start, end, update_tail)
                 except Exception as exc:
                     log.warning("%s geçmiş verisi alınamadı: %s", sym, exc)
                     out.missing.append(sym)
@@ -191,7 +262,7 @@ class BinanceHistory:
                     continue
                 out.bars[sym] = bars
                 try:
-                    out.funding[sym] = await self._load_funding(session, sym, start, end)
+                    out.funding[sym] = await self._load_funding(session, sym, start, end, update_tail)
                 except Exception as exc:
                     log.info("%s funding geçmişi alınamadı: %s", sym, exc)
         progress(1.0, "Veri hazır")
@@ -204,8 +275,12 @@ class SyntheticHistory:
     def __init__(self, seed: int = 21):
         self.seed = seed
 
-    async def load(self, symbols: list[str], start: int, end: int, progress: Progress, cancelled: Cancelled) -> HistoryData:
+    async def load(self, symbols: list[str], start: int, end: int, progress: Progress, cancelled: Cancelled,
+                   update_tail: bool = True) -> HistoryData:
         return await asyncio.to_thread(self._generate, symbols, start, end, progress, cancelled)
+
+    def cache_status(self) -> dict:
+        return {"symbols": 0, "first": None, "last": None, "updated_at": None, "size_mb": 0.0, "synthetic": True}
 
     def _generate(self, symbols: list[str], start: int, end: int, progress: Progress, cancelled: Cancelled) -> HistoryData:
         rng = np.random.default_rng(self.seed)

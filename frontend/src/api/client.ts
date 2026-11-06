@@ -160,7 +160,13 @@ export const api = {
   runOptimize: (cfg: { days?: number; top_n?: number; budget?: string }) => request<OptimizeJob>('POST', '/api/backtest/optimize', cfg),
   optimizeJobs: () => request<OptimizeJob[]>('GET', '/api/backtest/optimize/jobs'),
   optimizeJob: (id: string) => request<OptimizeJob>('GET', `/api/backtest/jobs/${encodeURIComponent(id)}`),
-  runLab: (cfg: { days?: number; top_n?: number; budget?: string; grouped?: boolean }) => request<LabJob>('POST', '/api/backtest/lab', cfg),
+  dataStatus: () =>
+    request<{ symbols: number; first: number | null; last: number | null; updated_at: number | null; size_mb: number; synthetic?: boolean; running_job?: string }>(
+      'GET',
+      '/api/backtest/data/status',
+    ),
+  dataSync: (cfg: { days?: number; top_n?: number }) => request<BacktestJob>('POST', '/api/backtest/data/sync', cfg),
+  runLab: (cfg: { days?: number; top_n?: number; budget?: string; grouped?: boolean; mode?: 'single' | 'groups' | 'coins' }) => request<LabJob>('POST', '/api/backtest/lab', cfg),
   labJobs: () => request<LabJob[]>('GET', '/api/backtest/lab/jobs'),
   labJob: (id: string) => request<LabJob>('GET', `/api/backtest/jobs/${encodeURIComponent(id)}`),
   applyLab: (id: string, mode: 'live' | 'paper') =>

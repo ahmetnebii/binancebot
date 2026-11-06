@@ -468,7 +468,7 @@ export interface BacktestResult {
 
 export interface BacktestJob {
   id: string;
-  kind?: 'backtest' | 'optimize' | 'lab';
+  kind?: 'backtest' | 'optimize' | 'lab' | 'data';
   created_at: number;
   finished_at: number | null;
   status: BacktestStatus;
@@ -686,7 +686,7 @@ export interface LabRow {
 }
 
 export interface LabGroup {
-  key: 'all' | 'big' | 'mid' | 'high';
+  key: string; // 'all' | 'big' | 'mid' | 'high' | coin sembolü
   name: string;
   symbols: string[];
   verdict: 'recommended' | 'weak' | 'none';
@@ -701,12 +701,25 @@ export interface LabGroup {
   finalists: { label: string; details: string[]; dev: LabStats }[];
   leaderboard: LabRow[];
   full: BacktestResult | null;
+  full_summary?: {
+    trades: number;
+    win_rate: number | null;
+    profit_factor: number | null;
+    expectancy_r: number | null;
+    total_return_pct: number;
+    max_drawdown_pct: number;
+    initial_equity: number;
+    final_equity: number;
+    avg_hold_hours: number | null;
+    fees_total: number;
+  } | null;
 }
 
 export interface LabResult {
   verdict: 'recommended' | 'weak' | 'none';
   verdict_text: string;
   grouped?: boolean;
+  mode?: 'single' | 'groups' | 'coins';
   period: { start: number; split1: number; split2: number; end: number };
   tested: number;
   groups?: LabGroup[];
@@ -726,7 +739,7 @@ export interface LabJob extends Omit<BacktestJob, 'result' | 'summary' | 'config
   kind: 'lab';
   applied_at?: number | null;
   applied_mode?: 'live' | 'paper';
-  config: { days: number; top_n: number; symbols: string[]; budget: string; candidates: number; grouped?: boolean };
+  config: { days: number; top_n: number; symbols: string[]; budget: string; candidates: number; grouped?: boolean; mode?: 'single' | 'groups' | 'coins' };
   summary: { verdict: LabResult['verdict']; label: string | null; tested: number } | null;
   result?: LabResult;
 }

@@ -1,5 +1,5 @@
 import clsx from 'clsx';
-import { AlertTriangle, CheckCircle2, FlaskConical, FlaskRound, Loader2, Rocket, ShieldCheck, Square, Trophy, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Database, Download, FlaskConical, FlaskRound, Loader2, Rocket, ShieldCheck, Square, Trophy, XCircle } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { api, withToast } from '../../api/client';
 import type { LabGroup, LabJob, LabResult, LabRow, LabStats } from '../../api/types';
@@ -22,12 +22,16 @@ const BUDGETS = [
 ] as const;
 
 /** Kaba süre tahmini: 30 coin · 1 yıl · 6 çekirdekte kural başına ~0,05 sn (ölçülmüş); uzun geçmişte 4 işçi. */
-function estimate(n: number, days: number, grouped: boolean): string {
+type LabMode = 'single' | 'groups' | 'coins';
+
+/** Kaba süre tahmini (ölçülmüş): 30 coin · 1 yıl için kural başına ~0,25 sn tek çekirdek. */
+function estimate(n: number, days: number, mode: LabMode, coins: number): string {
   const workers = days > 400 ? 4 : 6;
-  const perRule = 0.25 * (days / 365); // sn, 30 coin, tek çekirdek
-  const rules = grouped ? n * 3 : n;
-  // gruplu: 3 grup × (coinlerin üçte biri) ≈ tek kuralla aynı toplam iş
-  const sec = (rules * perRule) / workers / (grouped ? 3 : 1) + 120 + (days > 400 ? 900 : 0);
+  const perRule30 = 0.25 * (days / 365);
+  // single: n kural × 30 coin; groups: 3 × n kural × ~10 coin; coins: coins × n kural × 1 coin
+  const work = mode === 'single' ? n * perRule30 : mode === 'groups' ? n * perRule30 : (coins * n * perRule30) / 30;
+  const groupsCount = mode === 'single' ? 1 : mode === 'groups' ? 3 : coins;
+  const sec = work / workers + 120 * groupsCount + (days > 400 ? 900 : 0);
   const lo = sec * 0.6;
   const hi = sec * 1.6;
   const f = (x: number) => (x < 3600 ? `${Math.max(1, Math.round(x / 60))} dk` : `${(x / 3600).toFixed(1).replace('.', ',')} saat`);
@@ -134,7 +138,7 @@ function Running({ job, onCancel, cancelling }: { job: LabJob; onCancel: () => v
           <Loader2 className="h-4 w-4 animate-spin text-accent" />
           {job.status === 'queued' ? 'Sırada…' : 'Laboratuvar çalışıyor'}
           <span className="text-[11.5px] text-subtle">
-            {job.config.days} gün · ilk {job.config.top_n} coin · {nf(job.config.candidates)} kural · {fmtDuration(elapsed)} geçti
+            {job.config.days} gün · ilk {job.config.top_n} coin · {job.config.mode === 'coins' ? `coin bazlı (${nf(job.config.candidates)} kural × ${job.config.top_n} coin)` : job.config.mode === 'groups' || job.config.grouped ? `coin grupları (${nf(job.config.candidates)} kural × 3 grup)` : `tek kural (${nf(job.config.candidates)} kural)`} · {fmtDuration(elapsed)} geçti
             {eta !== null && ` · ~${fmtDuration(eta)} kaldı`}
           </span>
         </div>
@@ -227,6 +231,136 @@ function GroupView({ g, p }: { g: LabGroup; p: LabResult['period'] }) {
   );
 }
 
+const VERDICT_LABEL = (g: LabGroup) =>
+  g.verdict === 'recommended' ? 'Önerilen' : g.verdict === 'weak' ? 'Zayıf avantaj' : g.forward_ok ? 'Simülasyonda denemeye değer' : 'Elendi';
+const VERDICT_TONE = (g: LabGroup): 'up' | 'warn' | 'proj' | 'down' =>
+  g.verdict === 'recommended' ? 'up' : g.verdict === 'weak' ? 'warn' : g.forward_ok ? 'proj' : 'down';
+
+function downloadReport(groups: LabGroup[], period: LabResult['period'], job: LabJob) {
+  const esc = (v: unknown) => {
+    const x = v === null || v === undefined ? '' : String(v);
+    return /[";\n]/.test(x) ? `"${x.replace(/"/g, '""')}"` : x;
+  };
+  const num = (v: number | null | undefined, d = 2) => (isNum(v) ? v.toFixed(d).replace('.', ',') : '');
+  const head = [
+    'Coin / Grup', 'Karar', 'Strateji', 'Ayarlar', 'Tüm dönem getiri %', 'Maks. düşüş %', 'Tüm dönem işlem', 'Kazanma %',
+    'Profit factor', 'Beklenti R', 'Final sınavı getiri %', 'Final işlem', 'Final beklenti R', 'Coinler',
+  ];
+  const rows = groups.map((g) => {
+    const fs = g.full_summary;
+    const f = g.best?.final;
+    return [
+      g.key === 'all' ? 'Tüm coinler' : g.key.endsWith('USDT') ? g.key : g.name, VERDICT_LABEL(g), g.best?.label ?? '',
+      (g.best?.details ?? []).join(' | '), num(fs?.total_return_pct), num(fs?.max_drawdown_pct), fs?.trades ?? '',
+      isNum(fs?.win_rate) ? num(fs!.win_rate * 100, 1) : '', num(fs?.profit_factor), num(fs?.expectancy_r),
+      num(f?.return_pct), f?.trades ?? '', num(f?.expectancy_r), g.symbols.join(' '),
+    ];
+  });
+  const meta = [
+    [`Strateji Laboratuvarı raporu — ${fmtDateTime(job.finished_at)}`],
+    [`Dönem: ${fmtDate(period.start)} – ${fmtDate(period.end)} · eğitim → ${fmtDate(period.split1)} · doğrulama → ${fmtDate(period.split2)} · final sınavı → ${fmtDate(period.end)}`],
+    [],
+  ];
+  const csv = [...meta, head, ...rows].map((r) => r.map(esc).join(';')).join('\r\n');
+  const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `laboratuvar-raporu-${new Date(job.finished_at ?? Date.now()).toISOString().slice(0, 10)}.csv`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+function ReportTable({
+  groups,
+  selected,
+  onSelect,
+  period,
+  job,
+}: {
+  groups: LabGroup[];
+  selected?: string;
+  onSelect: (k: string) => void;
+  period: LabResult['period'];
+  job: LabJob;
+}) {
+  const sorted = [...groups].sort(
+    (a, b) => rankOf(b) - rankOf(a) || (b.full_summary?.total_return_pct ?? -1e9) - (a.full_summary?.total_return_pct ?? -1e9),
+  );
+  const counts = {
+    rec: groups.filter((g) => g.verdict === 'recommended').length,
+    weak: groups.filter((g) => g.verdict === 'weak').length,
+    fw: groups.filter((g) => g.verdict === 'none' && g.forward_ok).length,
+    out: groups.filter((g) => g.verdict === 'none' && !g.forward_ok).length,
+  };
+  return (
+    <div className="rounded-xl border border-line">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5">
+        <div>
+          <div className="text-[13px] font-semibold text-fg">Sonuç raporu</div>
+          <div className="text-[11.5px] text-subtle">
+            {counts.rec} önerilen · {counts.weak} zayıf · {counts.fw} denemeye değer · {counts.out} elendi — satıra tıklayınca ayrıntı aşağıda açılır.
+            Getiriler her biri {nf(groups[0]?.full_summary?.initial_equity ?? 1000)} USDT ile başlayan ayrı simülasyonlardır.
+          </div>
+        </div>
+        <Button size="sm" variant="secondary" onClick={() => downloadReport(groups, period, job)}>
+          Raporu indir (Excel/CSV)
+        </Button>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[900px] text-[12px]">
+          <thead>
+            <tr className="border-t border-line text-[11px] text-subtle">
+              <th className="px-2 py-1.5 text-left font-medium">Coin / Grup</th>
+              <th className="px-2 py-1.5 text-left font-medium">Karar</th>
+              <th className="px-2 py-1.5 text-left font-medium">Bulunan strateji ve ayarlar</th>
+              <th className="px-2 py-1.5 text-right font-medium">Tüm dönem getiri</th>
+              <th className="px-2 py-1.5 text-right font-medium">Maks. düşüş</th>
+              <th className="px-2 py-1.5 text-right font-medium">İşlem</th>
+              <th className="px-2 py-1.5 text-right font-medium">Kazanma</th>
+              <th className="px-2 py-1.5 text-right font-medium">Final sınavı</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((x) => {
+              const fs = x.full_summary;
+              const f = x.best?.final;
+              return (
+                <tr
+                  key={x.key}
+                  onClick={() => onSelect(x.key)}
+                  className={clsx('cursor-pointer border-t border-line align-top hover:bg-elevated/60', x.key === selected && 'bg-accent/[0.06]')}
+                >
+                  <td className="px-2 py-2 font-medium text-fg">
+                    {x.key.endsWith('USDT') ? x.key.replace('USDT', '') : x.name}
+                    {!x.key.endsWith('USDT') && x.symbols.length > 0 && <div className="text-[10.5px] font-normal text-subtle">{x.symbols.length} coin</div>}
+                  </td>
+                  <td className="px-2 py-2">
+                    <Badge tone={VERDICT_TONE(x)}>{VERDICT_LABEL(x)}</Badge>
+                  </td>
+                  <td className="px-2 py-2">
+                    <div className="text-fg">{x.best?.label ?? 'Kural bulunamadı'}</div>
+                    {x.best && <div className="mt-0.5 text-[10.5px] leading-snug text-subtle">{x.best.details.slice(1).join(' · ')}</div>}
+                  </td>
+                  <td className={clsx('num px-2 py-2 text-right font-semibold', pnlClass(fs?.total_return_pct ?? 0))}>{pctU(fs?.total_return_pct)}</td>
+                  <td className="num px-2 py-2 text-right text-down">{isNum(fs?.max_drawdown_pct) ? `-${fmtNum(fs!.max_drawdown_pct, 1)}%` : '—'}</td>
+                  <td className="num px-2 py-2 text-right">{fs?.trades ?? '—'}</td>
+                  <td className="num px-2 py-2 text-right">{isNum(fs?.win_rate) ? fmtPct(fs!.win_rate, { digits: 0 }) : '—'}</td>
+                  <td className={clsx('num px-2 py-2 text-right', pnlClass(f?.return_pct ?? 0))}>
+                    {pctU(f?.return_pct)}
+                    <div className="text-[10.5px] text-subtle">{f ? `${f.trades} işlem · ${fmtR(f.expectancy_r)}` : ''}</div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+const rankOf = (g: LabGroup) => (g.verdict === 'recommended' ? 3 : g.verdict === 'weak' ? 2 : g.forward_ok ? 1 : 0);
+
 function ResultPanel({
   job,
   onApply,
@@ -276,21 +410,7 @@ function ResultPanel({
         </div>
       </div>
 
-      {groups.length > 1 && (
-        <Segmented
-          value={tab}
-          onChange={setTab}
-          options={groups.map((x) => ({
-            value: x.key,
-            label: (
-              <span className="flex items-center gap-1.5">
-                <span className={clsx('h-1.5 w-1.5 rounded-full', x.verdict === 'recommended' ? 'bg-up' : x.verdict === 'weak' ? 'bg-warn' : x.forward_ok ? 'bg-proj' : 'bg-down')} />
-                {x.name}
-              </span>
-            ),
-          }))}
-        />
-      )}
+      <ReportTable groups={groups} selected={g?.key} onSelect={setTab} period={r.period} job={job} />
       {g && <GroupView g={g} p={r.period} />}
 
       <ul className="space-y-1 text-[11.5px] text-subtle">
@@ -309,7 +429,8 @@ export function StrategyLab({ blocked, onApplied }: { blocked: boolean; onApplie
   const jobsMap = useApp((s) => s.backtestJobs);
   const [days, setDays] = useState('1095');
   const [budget, setBudget] = useState<string>('derin');
-  const [grouped, setGrouped] = useState<'single' | 'groups'>('groups');
+  const [mode, setMode] = useState<LabMode>('groups');
+  const [coins, setCoins] = useState('15');
   const [busy, setBusy] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [applying, setApplying] = useState<'live' | 'paper' | null>(null);
@@ -337,7 +458,7 @@ export function StrategyLab({ blocked, onApplied }: { blocked: boolean; onApplie
   const start = async () => {
     setBusy(true);
     try {
-      const j = await withToast(api.runLab({ days: Number(days), top_n: 30, budget, grouped: grouped === 'groups' }), 'Laboratuvar başlatılamadı');
+      const j = await withToast(api.runLab({ days: Number(days), top_n: mode === 'coins' ? Number(coins) : 30, budget, mode }), 'Laboratuvar başlatılamadı');
       useApp.getState().upsertBacktestJob(j as never);
       toast.success('Laboratuvar başladı — bitince sonuç burada görünecek');
     } catch {
@@ -396,6 +517,30 @@ export function StrategyLab({ blocked, onApplied }: { blocked: boolean; onApplie
   };
 
   const running = latest && active(latest);
+  const dataJob = useMemo(
+    () => Object.values(jobsMap).filter((j) => j.kind === 'data').sort((a, b) => b.created_at - a.created_at)[0],
+    [jobsMap],
+  );
+  const dataRunning = !!dataJob && active(dataJob);
+  const dstat = useAsync(() => api.dataStatus(), [dataJob?.status]);
+  const [syncing, setSyncing] = useState(false);
+  const dataDays = Math.round(((dstat.data?.last ?? 0) - (dstat.data?.first ?? 0)) / 86_400_000);
+  const needDays = Number(days);
+  const covered = !!dstat.data?.synthetic || (!!dstat.data?.symbols && dataDays >= needDays - 2);
+  const stale = !!dstat.data?.last && Date.now() - dstat.data.last > 2 * 86_400_000;
+  const sync = async () => {
+    setSyncing(true);
+    try {
+      const j = await withToast(api.dataSync({ days: needDays, top_n: mode === 'coins' ? Math.max(Number(coins), 30) : 30 }), 'Veri indirme başlatılamadı');
+      useApp.getState().upsertBacktestJob(j);
+      toast.success('Veriler indiriliyor — bitince strateji aramasını başlatabilirsin');
+    } catch {
+      /* toast */
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const sel = BUDGETS.find((b) => b.value === budget);
 
   return (
@@ -407,6 +552,40 @@ export function StrategyLab({ blocked, onApplied }: { blocked: boolean; onApplie
         icon={<FlaskConical className="h-4 w-4 text-accent" />}
       />
       <div className="space-y-4 px-4 pb-5 pt-1">
+        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-line px-3 py-2.5">
+          <Database className="h-4 w-4 text-muted" />
+          <div className="min-w-0 flex-1 text-[12px]">
+            <div className="font-medium text-fg">1 · Geçmiş veri</div>
+            {dataRunning ? (
+              <div className="text-muted">
+                <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />
+                {dataJob!.progress.message} · %{Math.round(dataJob!.progress.pct)}
+              </div>
+            ) : dstat.data?.synthetic ? (
+              <div className="text-subtle">Sentetik geliştirme verisi (indirme gerekmez)</div>
+            ) : dstat.data?.symbols ? (
+              <div className={clsx(covered && !stale ? 'text-subtle' : 'text-warn')}>
+                Önbellekte {dstat.data.symbols} coin · {fmtDate(dstat.data.first)} – {fmtDate(dstat.data.last)} ({dataDays} gün) ·{' '}
+                {fmtNum(dstat.data.size_mb, 0)} MB · son güncelleme {fmtDateTime(dstat.data.updated_at)}
+                {!covered && ` — seçilen ${needDays} gün için yetersiz, önce indir`}
+                {covered && stale && ' — son günler eksik, istersen güncelle'}
+              </div>
+            ) : (
+              <div className="text-warn">Henüz veri indirilmedi. Önce verileri indir (3 yıl · 30 coin ilk seferde ~20-30 dk; sonra saniyeler).</div>
+            )}
+          </div>
+          {!dstat.data?.synthetic && (
+            dataRunning ? (
+              <Button size="sm" variant="outline-danger" icon={<Square className="h-3.5 w-3.5" />} onClick={() => api.cancelBacktest(dataJob!.id)}>
+                Durdur
+              </Button>
+            ) : (
+              <Button size="sm" variant={covered ? 'secondary' : 'primary'} icon={<Download className="h-3.5 w-3.5" />} onClick={sync} loading={syncing} disabled={!!running}>
+                {dstat.data?.symbols ? 'Verileri güncelle' : 'Verileri indir'}
+              </Button>
+            )
+          )}
+        </div>
         {running ? (
           <Running job={latest} onCancel={cancel} cancelling={cancelling} />
         ) : (
@@ -427,30 +606,56 @@ export function StrategyLab({ blocked, onApplied }: { blocked: boolean; onApplie
               <div className="label mb-1 flex items-center gap-1">
                 Yöntem
                 <InfoTip>
-                  Coin grupları: coinler eğitim dönemindeki hacim ve oynaklıklarına göre 3 gruba ayrılır (büyükler, orta oynaklık, yüksek
-                  oynaklık) ve her gruba ayrı kural aranır. Tek tek coin yerine grup kullanılır çünkü tek coinde veri, güvenilir sonuç için yetmez.
+                  Coin grupları: coinler eğitim dönemindeki hacim ve oynaklıklarına göre 3 gruba ayrılır ve her gruba ayrı kural aranır.
+                  Coin bazlı: her coine ayrı ayrı binlerce kural denenir; tek coinde veri az olduğu için koruma kuralları her coin için ayrı
+                  uygulanır ve çoğu coinin elenmesi normaldir. Tek kural: tüm coinlere ortak tek kural.
                 </InfoTip>
               </div>
               <Segmented
-                value={grouped}
-                onChange={setGrouped}
+                value={mode}
+                onChange={setMode}
                 options={[
                   { value: 'groups', label: 'Coin grupları' },
+                  { value: 'coins', label: 'Coin bazlı' },
                   { value: 'single', label: 'Tek kural' },
                 ]}
               />
             </div>
+            {mode === 'coins' && (
+              <div>
+                <div className="label mb-1">Coin sayısı</div>
+                <Segmented
+                  value={coins}
+                  onChange={setCoins}
+                  options={[
+                    { value: '5', label: 'İlk 5' },
+                    { value: '10', label: 'İlk 10' },
+                    { value: '15', label: 'İlk 15' },
+                    { value: '30', label: 'İlk 30' },
+                  ]}
+                />
+              </div>
+            )}
             <div>
               <div className="label mb-1 flex items-center gap-1">
                 Kural sayısı{' '}
                 <span className="normal-case text-subtle">
-                  ({sel ? `${nf(sel.n)} kural${grouped === 'groups' ? ' × 3 grup' : ''} · ${estimate(sel.n, Number(days), grouped === 'groups')}` : ''})
+                  ({sel ? `${nf(sel.n)} kural${mode === 'groups' ? ' × 3 grup' : mode === 'coins' ? ` × ${coins} coin` : ''} · ${estimate(sel.n, Number(days), mode, Number(coins))}` : ''})
                 </span>
               </div>
               <Segmented value={budget} onChange={setBudget} options={BUDGETS.map((b) => ({ value: b.value, label: b.label }))} />
             </div>
-            <Button variant="primary" size="lg" icon={<FlaskConical className="h-4 w-4" />} onClick={start} loading={busy} disabled={blocked} className="ml-auto">
-              En iyi stratejiyi bul
+            <Button
+              variant="primary"
+              size="lg"
+              icon={<FlaskConical className="h-4 w-4" />}
+              onClick={start}
+              loading={busy}
+              disabled={blocked || dataRunning}
+              className="ml-auto"
+              title="Önbellekteki veriyle arar; ağdan yalnızca eksik coin/dönem indirilir"
+            >
+              2 · En iyi stratejiyi bul
             </Button>
             {blocked && <p className="w-full text-right text-[11.5px] text-subtle">Çalışan başka bir iş bitince başlatabilirsin.</p>}
           </div>

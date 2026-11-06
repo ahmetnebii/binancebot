@@ -42,6 +42,8 @@ H4 = 4 * HOUR
 FUNDING_DEFAULT = 0.0001
 MAX_BARS_15M = 500
 MAX_BARS_1H = 500
+MAX_BARS_1D = 300
+DAY = 86_400_000
 
 
 @dataclass
@@ -191,6 +193,7 @@ class Backtester:
     def _prepare(self) -> None:
         self.h1: dict[str, dict[str, np.ndarray]] = {}
         self.h1_count: dict[str, np.ndarray] = {}
+        self.d1_count: dict[str, np.ndarray] = {}
         self.ptr: dict[str, int] = {}
         vols: list[tuple[float, str]] = []
         for s in self.symbols:
@@ -202,6 +205,9 @@ class Backtester:
             b1h = SliceBuffer(h)
             self.view.bufs[(s, "15m")] = b15
             self.view.bufs[(s, "1h")] = b1h
+            d1 = aggregate_bars(a, DAY, closed_only=False)
+            self.d1_count[s] = np.searchsorted(d1["t"] + DAY, a["t"] + STEP, side="right")
+            self.view.bufs[(s, "1d")] = SliceBuffer(d1)
             self.ptr[s] = 0
             vols.append((float(a["qv"].sum()), s))
         vols.sort(reverse=True)
@@ -487,6 +493,7 @@ class Backtester:
                     bars_now[s] = p - 1
                 self.view.bufs[(s, "15m")].set_end(p, MAX_BARS_15M)
                 self.view.bufs[(s, "1h")].set_end(int(self.h1_count[s][p - 1]) if p > 0 else 0, MAX_BARS_1H)
+                self.view.bufs[(s, "1d")].set_end(int(self.d1_count[s][p - 1]) if p > 0 else 0, MAX_BARS_1D)
                 if p > 0 and s in bars_now:
                     mi = self.view.marks.get(s)
                     if mi is None:
@@ -566,7 +573,7 @@ class Backtester:
                     if not rule:
                         continue
                     ltf = rule.get("tf")
-                    if ltf == "15m" or (ltf == "1h" and hour_close) or (ltf == "4h" and close_t % H4 == 0):
+                    if ltf == "15m" or (ltf == "1h" and hour_close) or (ltf == "4h" and close_t % H4 == 0) or (ltf == "1d" and close_t % DAY == 0):
                         sig = self.lab.evaluate(s, ctx, rule, grp)
                         if sig:
                             found.append(sig)

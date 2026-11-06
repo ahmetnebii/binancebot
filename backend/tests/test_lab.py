@@ -31,7 +31,7 @@ def test_rules_valid_and_described():
     for _ in range(400):
         r = random_rule(rng)
         seen_types.add(r["entry"]["type"])
-        assert r["tf"] in ("15m", "1h", "4h") and len(r["filters"]) <= 2
+        assert r["tf"] in ("15m", "1h", "4h", "1d") and len(r["filters"]) <= 2
         assert not ({"adx_trend", "adx_range"} <= set(r["filters"]))
         m = mutate(r, rng)
         assert m["tf"] == r["tf"] and len(m["filters"]) <= 2
@@ -190,3 +190,44 @@ def test_forward_ok():
     assert not lab.forward_ok({"is": pos, "oos": neg, "dev": pos, "final": pos})
     assert not lab.forward_ok({"is": pos, "oos": pos, "dev": pos, "final": {"expectancy_r": 0.5, "trades": 3}})
     assert not lab.forward_ok(None)
+
+
+def test_daily_rules_valid_and_causal(hist):
+    _, _, _, data = hist
+    from app.features.indicators import aggregate_bars
+    a = aggregate_bars(data.bars["ETHUSDT"], 86_400_000)
+    rng = random.Random(21)
+    n = 0
+    for _ in range(2000):
+        r = random_rule(rng)
+        if r["tf"] != "1d":
+            continue
+        n += 1
+        assert r["time_bars"] in (5, 10, 20, 40)
+        if r["entry"]["type"] == "ema_cross":
+            assert r["entry"]["pair"][1] <= 50  # canlı tampon 250 günlük mum
+        r["filters"] = [f for f in r["filters"] if f != "btc"]
+        cut = len(a["t"]) - 20
+        lo1, sh1 = rule_signals(Ind({k: v[:cut] for k, v in a.items()}), r)
+        lo2, sh2 = rule_signals(Ind(a), r)
+        assert np.array_equal(lo1, lo2[:cut]) and np.array_equal(sh1, sh2[:cut])
+    assert n > 200
+
+
+def test_rule_due_daily():
+    from app.strategies.lab_rules import rule_due
+    day = 86_400_000
+    r = {"tf": "1d"}
+    assert rule_due(r, "1h", 20 * day + 60_000) and not rule_due(r, "1h", 20 * day + 3_600_000)
+    assert not rule_due(r, "15m", 20 * day + 60_000)
+
+
+def test_coin_mode_runs_and_explicit_groups_do_not_capture_unknown(hist, monkeypatch):
+    from app.strategies.lab_rules import group_for
+    syms, start, end, data = hist
+    monkeypatch.setitem(lab.BUDGETS, "test", 40)
+    out = lab.run_lab(data, {}, _base(syms[:3]), start, end, "test", lambda *a: None, lambda: False, mode="coins")
+    assert [g["key"] for g in out["groups"]] == syms[:3] and all(g["symbols"] == [g["key"]] for g in out["groups"])
+    groups = [{"key": g["key"], "symbols": g["symbols"], "vol_min": None, "vol_max": None} for g in out["groups"]]
+    assert group_for(syms[0], groups)["key"] == syms[0]
+    assert group_for("NEWUSDT", groups, 0.02) is None  # kural bulunmayan coin başka coinin kuralını almaz
