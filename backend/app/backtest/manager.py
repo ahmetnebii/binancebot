@@ -800,8 +800,15 @@ class BacktestManager:
             end = now_ms()
             end -= end % STEP
             start = end - cfg["days"] * 86_400_000
+            from ..market.spot import has_spot, spot_bases
+            self._set_progress(job, "data", 1.0, "Binance Spot'ta işlem gören coinler kontrol ediliyor")
+            bases = await spot_bases(self.ctx.db, self.ctx.synthetic)
+            symbols = [s for s in cfg["symbols"] if has_spot(s, bases)]
+            no_spot = [s for s in cfg["symbols"] if s not in symbols]
+            if len(symbols) < 3:
+                raise RuntimeError("Spotta işlem gören yeterli coin bulunamadı")
             data = await self._history().load(
-                cfg["symbols"], start, end,
+                symbols, start, end,
                 progress=lambda f, m: self._set_progress(job, "data", f * 30.0, m),
                 cancelled=self._cancel.is_set, update_tail=False,
             )
@@ -811,7 +818,7 @@ class BacktestManager:
                 loop.call_soon_threadsafe(self._set_progress, job, "analyze", 30.0 + f * 70.0, m)
 
             res = await asyncio.to_thread(
-                carry_analyze, data, cfg["symbols"], start, end,
+                carry_analyze, data, symbols, start, end,
                 spot_fee=cfg["spot_fee"], perp_fee=cfg["taker_fee"], slippage=max(0.0002, cfg["slippage_bps"] / 10_000 * 0.7),
                 leverage=cfg["leverage"], progress=prog,
             )
@@ -825,11 +832,15 @@ class BacktestManager:
             res["warnings"] = [
                 "Spot ile vadeli arasındaki fiyat farkı (baz) dalgalanması modellenmedi; gerçekte giriş/çıkışta küçük ek kâr/zarar yaratabilir.",
                 "Short bacak teminatlıdır: fiyat sert yükselirse teminat eklenmezse likidasyon riski vardır. Düşük kaldıraç (2-3x) kullanın.",
-                "Coinin Binance spot'ta işlem görmesi gerekir; bazı vadeli coinlerin spotu yoktur.",
+                "Yalnızca Binance Spot'ta USDT çiftiyle işlem gören coinler kullanıldı (vadelideki 1000PEPE gibi çarpanlı semboller spottaki karşılığıyla eşlendi).",
                 "Parametreler eğitim döneminde (%60) seçildi; raporlanan test sonucu hiç görülmemiş son %40 döneme aittir.",
             ]
             if data.source == "synthetic":
                 res["warnings"].insert(0, "Sentetik geliştirme verisi kullanıldı: sonuçlar gerçek piyasayı yansıtmaz.")
+            res["excluded_no_spot"] = no_spot
+            if no_spot:
+                res["warnings"].insert(0, f"Binance Spot'ta olmayan {len(no_spot)} coin analizden çıkarıldı (spot bacağı kurulamaz): "
+                                       + ", ".join(x.replace("USDT", "") for x in no_spot))
             p = res["portfolio"]
             job["status"] = "done"
             job["finished_at"] = now_ms()

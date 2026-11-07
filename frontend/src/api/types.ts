@@ -788,6 +788,7 @@ export interface CarryResult {
     now: { symbol: string; trailing_apr_pct: number; held: boolean }[];
   };
   coins: CarryCoin[];
+  excluded_no_spot?: string[];
   data_source: 'binance' | 'synthetic';
   warnings: string[];
 }
@@ -811,6 +812,7 @@ export interface RadarRow {
   trailing_apr_pct: number | null;
   held: boolean;
   selected: boolean;
+  spot?: boolean;
 }
 
 export interface FundingRadar {

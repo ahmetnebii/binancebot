@@ -90,14 +90,22 @@ function RadarCard() {
               </thead>
               <tbody>
                 {rows.map((r) => (
-                  <tr key={r.symbol} className={clsx('border-t border-line', r.selected && 'bg-up/[0.05]')}>
+                  <tr key={r.symbol} className={clsx('border-t border-line', r.selected && 'bg-up/[0.05]', r.spot === false && 'opacity-50')}>
                     <td className="px-2 py-1.5 font-medium text-fg">{coin(r.symbol)}</td>
                     <td className={clsx('num px-2 py-1.5 text-right', pnlClass(r.current_apr_pct ?? 0))}>{pct(r.current_apr_pct)}</td>
                     <td className={clsx('num px-2 py-1.5 text-right', pnlClass(r.apr_7d_pct ?? 0))}>{pct(r.apr_7d_pct)}</td>
                     <td className={clsx('num px-2 py-1.5 text-right', pnlClass(r.apr_30d_pct ?? 0))}>{pct(r.apr_30d_pct)}</td>
                     <td className={clsx('num px-2 py-1.5 text-right font-semibold', pnlClass(r.trailing_apr_pct ?? 0))}>{pct(r.trailing_apr_pct)}</td>
                     <td className="px-2 py-1.5">
-                      {r.selected ? <Badge tone="up">Kurala uyuyor</Badge> : r.held ? <Badge tone="warn">Çıkış yakın</Badge> : <span className="text-subtle">—</span>}
+                      {r.spot === false ? (
+                        <Badge tone="neutral" title="Binance Spot'ta yok: spot bacağı kurulamaz">Spotta yok</Badge>
+                      ) : r.selected ? (
+                        <Badge tone="up">Kurala uyuyor</Badge>
+                      ) : r.held ? (
+                        <Badge tone="warn">Çıkış yakın</Badge>
+                      ) : (
+                        <span className="text-subtle">—</span>
+                      )}
                     </td>
                   </tr>
                 ))}

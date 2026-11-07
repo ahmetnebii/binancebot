@@ -71,8 +71,10 @@ def test_paper_carry_follows_rules(tmp_path):
         rows = []
         for i in range(90):  # 30 gün
             t = w_now - (90 - i) * WINDOW_MS
-            rows += [("HIGHUSDT", t, 0.0005), ("NEGUSDT", t, -0.0002), ("LOWUSDT", t, 0.00001)]
+            rows += [("HIGHUSDT", t, 0.0005), ("NEGUSDT", t, -0.0002), ("LOWUSDT", t, 0.00001), ("NOSPOTUSDT", t, 0.002)]
         await db.funding_upsert(rows)
+        # NOSPOT en yüksek funding'e sahip ama Binance Spot'ta yok → asla seçilmemeli
+        await db.kv_set("spot_bases", {"ts": now, "bases": ["HIGH", "NEG", "LOW"]})
         c = FakeCollector(db, [])
         await db.kv_set("carry_settings", {"k": 9, "enter_apr": 10.0, "exit_apr": 0.0, "top_n": 2})
         start = w_now - 20 * WINDOW_MS
@@ -86,8 +88,10 @@ def test_paper_carry_follows_rules(tmp_path):
         await c.carry_paper_update()
         assert (await db.kv_get("carry_paper"))["cum"] == before
         radar = await c.radar()
-        top = radar["rows"][0]
-        assert top["symbol"] == "HIGHUSDT" and top["held"] and top["selected"] and top["apr_30d_pct"] > 40
+        rows_by = {r["symbol"]: r for r in radar["rows"]}
+        assert rows_by["NOSPOTUSDT"]["spot"] is False and not rows_by["NOSPOTUSDT"]["selected"]
+        top = rows_by["HIGHUSDT"]
+        assert top["spot"] and top["held"] and top["selected"] and top["apr_30d_pct"] > 40
         await db.close()
     asyncio.run(go())
 
@@ -111,3 +115,10 @@ def test_crowd_analysis_detects_contrarian_effect():
     res = analysis.analyze(rows, [])
     r = next(x for x in res["results"] if x["feature"] == "ls_ratio")
     assert res["enough"] and r["diff_pct"] < 0 and r["diff_t"] < -2 and "tersi" in r["reading"]
+
+
+def test_spot_base_mapping():
+    from app.market.spot import has_spot, spot_base
+    assert spot_base("1000PEPEUSDT") == "PEPE" and spot_base("1000000MOGUSDT") == "MOG" and spot_base("BTCUSDT") == "BTC"
+    assert spot_base("1INCHUSDT") == "1INCH"  # gerçek adı rakamla başlayan coin bozulmamalı
+    assert has_spot("1000PEPEUSDT", {"PEPE"}) and not has_spot("AINUSDT", {"BTC"}) and has_spot("X", None)

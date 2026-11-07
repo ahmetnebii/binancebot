@@ -196,7 +196,13 @@ class CrowdCollector:
             return None
         return float(np.mean(vals)) * PER_YEAR * 100.0
 
+    async def _spot(self):
+        from ..market.spot import spot_bases
+        return await spot_bases(self.ctx.db, bool(getattr(self.ctx, "synthetic", False)))
+
     async def radar(self) -> dict:
+        from ..market.spot import has_spot
+        bases = await self._spot()
         cs = await self.carry_settings()
         now = now_ms()
         sums, raw = await self._window_sums(now - 35 * DAY)
@@ -210,7 +216,8 @@ class CrowdCollector:
         for sym in syms:
             ws = sums.get(sym, {})
             tr = self._trailing(ws, w_now, int(cs["k"]))
-            if tr is not None:
+            spot_ok = has_spot(sym, bases)
+            if tr is not None and spot_ok:
                 trailing_now[sym] = tr
             mi = eng.market.funding(sym) if eng else None
             cur = float(mi.funding_rate) if mi else None
@@ -237,6 +244,7 @@ class CrowdCollector:
                 "apr_30d_pct": apr_days(30),
                 "trailing_apr_pct": tr,
                 "held": sym in held,
+                "spot": spot_ok,
             })
         pick = portfolio_step(trailing_now, held, int(cs["top_n"]), float(cs["enter_apr"]), float(cs["exit_apr"]))
         for r in rows:
@@ -274,6 +282,9 @@ class CrowdCollector:
         eff = 1.0 / (1.0 + 1.0 / float(cs["leverage"]))
         half = (float(cs["spot_fee"]) + float(cs["perp_fee"]) + 2 * float(cs["slippage"]))
         sums, _ = await self._window_sums(paper["last_window"] - (k + 2) * WINDOW_MS)
+        from ..market.spot import has_spot
+        bases = await self._spot()
+        sums = {s: v for s, v in sums.items() if has_spot(s, bases)}  # yalnızca spot bacağı kurulabilen coinler
         changed = False
         w = paper["last_window"]
         # bir pencere, tamamen bitip ödemeleri kaydedildikten sonra işlenir
