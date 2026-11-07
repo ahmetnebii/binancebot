@@ -221,7 +221,7 @@ function MetricRow({ name, sub, m, strong }: { name: string; sub: string; m: Car
 const VERDICT = {
   recommended: { title: 'İstikrarlı funding getirisi bulundu', icon: <CheckCircle2 className="h-5 w-5 text-up" />, cls: 'border-up/30 bg-up/[0.06]' },
   weak: { title: 'Funding getirisi var ama düşük / dalgalı', icon: <AlertTriangle className="h-5 w-5 text-warn" />, cls: 'border-warn/30 bg-warn/[0.06]' },
-  none: { title: 'Maliyetlerden sonra getiri yok', icon: <XCircle className="h-5 w-5 text-down" />, cls: 'border-down/30 bg-down/[0.06]' },
+  none: { title: 'Maliyetlerden sonra getiri çok düşük', icon: <XCircle className="h-5 w-5 text-down" />, cls: 'border-down/30 bg-down/[0.06]' },
 };
 
 function CarryResultView({ job, onApply, applying }: { job: CarryJob; onApply: () => void; applying: boolean }) {

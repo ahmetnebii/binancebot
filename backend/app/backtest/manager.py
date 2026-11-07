@@ -828,6 +828,9 @@ class BacktestManager:
                 "none": "Bu dönemde funding toplama, maliyetler düşüldükten sonra kazandırmadı.",
             }
             res["verdict_text"] = texts[res["verdict"]]
+            if res["verdict"] == "none" and res["portfolio"]["test"]["apr_pct"] > 0:
+                res["verdict_text"] = (f"Test döneminde artıda (yıllık %{res['portfolio']['test']['apr_pct']:.1f}) ama maliyetler düşülünce getiri "
+                                       "çok düşük; bu seviye stabil coin faizine yakın, ek operasyon riskine değmeyebilir.")
             res["data_source"] = data.source
             res["warnings"] = [
                 "Spot ile vadeli arasındaki fiyat farkı (baz) dalgalanması modellenmedi; gerçekte giriş/çıkışta küçük ek kâr/zarar yaratabilir.",
