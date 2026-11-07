@@ -242,14 +242,28 @@ class BinanceHistory:
                 "updated_at": updated, "size_mb": round(size / 1_048_576, 1)}
 
     async def load(self, symbols: list[str], start: int, end: int, progress: Progress, cancelled: Cancelled,
-                   update_tail: bool = True) -> HistoryData:
-        """update_tail=False: önbellek başlangıcı kapsıyorsa ağa hiç çıkılmaz (strateji araması böyle çalışır)."""
+                   update_tail: bool = True, funding_only: bool = False) -> HistoryData:
+        """update_tail=False: önbellek başlangıcı kapsıyorsa ağa hiç çıkılmaz (strateji araması böyle çalışır).
+        funding_only=True: yalnızca funding geçmişi (mum indirilmez; funding arbitrajı analizi için yeterli ve çok hızlı)."""
         out = HistoryData(source="binance")
         verb = "indiriliyor" if update_tail else "yükleniyor"
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
             for i, sym in enumerate(symbols):
                 if cancelled():
                     raise BacktestCancelled()
+                if funding_only:
+                    progress(i / max(1, len(symbols)), f"{sym} funding geçmişi alınıyor ({i + 1}/{len(symbols)})")
+                    try:
+                        f = await self._load_funding(session, sym, start, end, True)
+                    except Exception as exc:
+                        log.info("%s funding geçmişi alınamadı: %s", sym, exc)
+                        out.missing.append(sym)
+                        continue
+                    if len(f[0]):
+                        out.funding[sym] = f
+                    else:
+                        out.missing.append(sym)
+                    continue
                 progress(i / max(1, len(symbols)), f"{sym} mumları {verb} ({i + 1}/{len(symbols)})")
                 try:
                     bars = await self._load_symbol(session, sym, start, end, update_tail)
@@ -276,7 +290,7 @@ class SyntheticHistory:
         self.seed = seed
 
     async def load(self, symbols: list[str], start: int, end: int, progress: Progress, cancelled: Cancelled,
-                   update_tail: bool = True) -> HistoryData:
+                   update_tail: bool = True, funding_only: bool = False) -> HistoryData:
         return await asyncio.to_thread(self._generate, symbols, start, end, progress, cancelled)
 
     def cache_status(self) -> dict:

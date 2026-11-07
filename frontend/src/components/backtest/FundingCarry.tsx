@@ -346,7 +346,7 @@ function AnalysisCard({ blocked }: { blocked: boolean }) {
   const [days, setDays] = useState('1095');
   const [fee, setFee] = useState('0.001');
   const [lev, setLev] = useState('3');
-  const [coins, setCoins] = useState('60');
+  const [coins, setCoins] = useState('1000');
   const [busy, setBusy] = useState(false);
   const [applying, setApplying] = useState(false);
   const now = useNow(1000);
@@ -430,7 +430,7 @@ function AnalysisCard({ blocked }: { blocked: boolean }) {
             </div>
             <div>
               <div className="label mb-1">Coin sayısı</div>
-              <Segmented value={coins} onChange={setCoins} options={[{ value: '30', label: 'İlk 30' }, { value: '60', label: 'İlk 60' }]} />
+              <Segmented value={coins} onChange={setCoins} options={[{ value: '30', label: 'İlk 30' }, { value: '60', label: 'İlk 60' }, { value: '1000', label: 'Tümü' }]} />
             </div>
             <div>
               <div className="label mb-1">Vadeli kaldıraç</div>

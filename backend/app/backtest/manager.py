@@ -771,14 +771,16 @@ class BacktestManager:
         if not 90 <= days <= 1095:
             raise ValueError("Süre 90 ile 1095 gün arasında olmalı")
         top_n = int(body.get("top_n") or 30)
-        if not 5 <= top_n <= 60:
-            raise ValueError("Sembol sayısı 5 ile 60 arasında olmalı")
+        if not 5 <= top_n <= 1000:
+            raise ValueError("Sembol sayısı 5 ile 1000 arasında olmalı")
         spot_fee = float(body.get("spot_fee") if body.get("spot_fee") is not None else 0.001)
         leverage = float(body.get("leverage") or 3.0)
         if not (0 <= spot_fee <= 0.01 and 1.0 <= leverage <= 10.0):
             raise ValueError("Komisyon veya kaldıraç geçersiz")
-        cfg = self._resolve_config({"days": min(days, 365), "top_n": top_n, "strategies": {"s1": True}})
-        cfg.update(days=days, spot_fee=spot_fee, leverage=leverage)
+        cfg = self._resolve_config({"days": min(days, 365), "top_n": min(top_n, 80), "strategies": {"s1": True}})
+        if top_n > 80:  # "tüm coinler": likidite filtresinden geçen bütün vadeli coinler
+            cfg["symbols"] = self._resolve_symbols(top_n, None)
+        cfg.update(days=days, spot_fee=spot_fee, leverage=leverage, top_n=top_n)
         job = {
             "id": new_id("carry"), "kind": "carry", "created_at": now_ms(), "finished_at": None,
             "status": "queued", "progress": {"phase": "data", "pct": 0.0, "message": "Sırada"},
@@ -810,7 +812,7 @@ class BacktestManager:
             data = await self._history().load(
                 symbols, start, end,
                 progress=lambda f, m: self._set_progress(job, "data", f * 30.0, m),
-                cancelled=self._cancel.is_set, update_tail=False,
+                cancelled=self._cancel.is_set, update_tail=True, funding_only=True,
             )
             loop = asyncio.get_running_loop()
 

@@ -29,7 +29,8 @@ if TYPE_CHECKING:  # pragma: no cover
 log = logging.getLogger(__name__)
 HOUR = 3_600_000
 DAY = 86_400_000
-TOP_SYMBOLS = 30
+TOP_SYMBOLS = 30        # kalabalık verisi (5 uç nokta) toplanan coin sayısı
+FUNDING_SYMBOLS = 250   # funding radarı için izlenen coin sayısı (tek uç nokta, ucuz)
 DEFAULT_CARRY = {"k": 21, "enter_apr": 10.0, "exit_apr": 0.0, "top_n": 5, "leverage": 3.0,
                  "spot_fee": 0.001, "perp_fee": 0.0005, "slippage": 0.0002}
 
@@ -73,16 +74,25 @@ class CrowdCollector:
                 self.state = "hata"
             await asyncio.sleep(60)
 
-    def symbols(self) -> list[str]:
+    def symbols(self, limit: int = TOP_SYMBOLS) -> list[str]:
         eng = self.ctx.engine
         if eng is None:
             return []
         m = eng.market
         ranked = sorted(((t.quote_volume, s) for s, t in m.tickers.items() if s in m.universe), reverse=True)
-        syms = [s for _, s in ranked][:TOP_SYMBOLS]
+        syms = [s for _, s in ranked][:limit]
         if not syms:
-            syms = list(m.universe)[:TOP_SYMBOLS]
+            syms = list(m.universe)[:limit]
         return syms
+
+    def funding_symbols(self) -> list[str]:
+        """Funding için likidite filtresinden geçen tüm vadeli coinler (en fazla FUNDING_SYMBOLS)."""
+        eng = self.ctx.engine
+        if eng is None:
+            return []
+        m = eng.market
+        ranked = sorted(((t.quote_volume, s) for s, t in m.tickers.items() if s in m.symbols and s.endswith("USDT")), reverse=True)
+        return [s for v, s in ranked if v >= 5_000_000][:FUNDING_SYMBOLS] or self.symbols()
 
     # --- toplama ---------------------------------------------------------------
     async def collect(self) -> None:
@@ -132,6 +142,15 @@ class CrowdCollector:
                 fr = await get("/fapi/v1/fundingRate", {"symbol": sym, "limit": 100 if flast is None else 10})
                 await db.funding_upsert([(sym, int(r["fundingTime"]), float(r["fundingRate"])) for r in fr if "fundingRate" in r])
                 await asyncio.sleep(0.15)
+            # funding radarı: kalabalık verisi toplanmayan diğer coinler için yalnızca funding
+            done = set(syms)
+            for sym in self.funding_symbols():
+                if sym in done:
+                    continue
+                flast = await db.funding_last_t(sym)
+                fr = await get("/fapi/v1/fundingRate", {"symbol": sym, "limit": 100 if flast is None else 10})
+                await db.funding_upsert([(sym, int(r["fundingTime"]), float(r["fundingRate"])) for r in fr if "fundingRate" in r])
+                await asyncio.sleep(0.1)
 
     async def _fetch(self, s: aiohttp.ClientSession, base: str, path: str, params: dict) -> list:
         for attempt in range(3):

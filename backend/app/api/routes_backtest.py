@@ -142,7 +142,7 @@ async def data_sync(body: DataSyncIn, request: Request) -> dict:
 
 class CarryIn(BaseModel):
     days: Optional[int] = Field(default=None, ge=90, le=1095)
-    top_n: Optional[int] = Field(default=None, ge=5, le=60)
+    top_n: Optional[int] = Field(default=None, ge=5, le=1000)
     spot_fee: Optional[float] = Field(default=None, ge=0, le=0.01)
     leverage: Optional[float] = Field(default=None, ge=1, le=10)
 

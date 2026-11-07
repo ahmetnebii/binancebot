@@ -71,3 +71,11 @@ def test_cache_status(tmp_path):
     _load(h, end - 30 * DAY, end, True)
     st = h.cache_status()
     assert st["symbols"] == 1 and st["last"] == end and st["first"] == end - 30 * DAY and st["size_mb"] >= 0
+
+
+def test_funding_only_skips_candles(tmp_path):
+    end = 1_800_000_000_000 - (1_800_000_000_000 % STEP)
+    h = FakeHistory(tmp_path, listed_at=0)
+    d = asyncio.run(h.load(["NEWUSDT", "OTHERUSDT"], end - 400 * DAY, end, lambda f, m: None, lambda: False, funding_only=True))
+    assert h.calls == [] and h.fund_calls > 0  # mum indirilmez, yalnızca funding
+    assert not d.bars and set(d.funding) == {"NEWUSDT", "OTHERUSDT"} and len(d.funding["NEWUSDT"][0]) > 1000
