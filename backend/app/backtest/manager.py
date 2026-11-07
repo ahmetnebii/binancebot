@@ -265,7 +265,32 @@ class BacktestManager:
     async def get(self, job_id: str) -> Optional[dict]:
         if self._job and self._job["id"] == job_id and self._job["status"] in ("queued", "running"):
             return {k: v for k, v in self._job.items()}
-        return await self.ctx.db.bt_get(job_id)
+        job = await self.ctx.db.bt_get(job_id)
+        if job and job.get("kind") == "full" and job.get("result"):
+            await self._enrich_full(job)
+        return job
+
+    async def _enrich_full(self, job: dict) -> None:
+        """Eski tam analiz raporlarına aylık getirileri sonradan ekler (yeniden çalıştırmaya gerek kalmaz)."""
+        from .full import candidate_monthly
+        rep = job["result"]
+        cands = [c for c in (rep.get("candidates") or []) if "monthly" not in c]
+        if not cands:
+            return
+        cache: dict[str, Optional[dict]] = {}
+        for c in cands:
+            jid = c.get("job_id")
+            if jid not in cache:
+                sub = await self.ctx.db.bt_get(jid) if jid else None
+                cache[jid] = (sub or {}).get("result")
+            c["monthly"] = candidate_monthly(c, cache[jid])
+        for key in ("best", "trial"):
+            b = rep.get(key)
+            if b:
+                same = next((c for c in rep["candidates"] if c.get("job_id") == b.get("job_id") and c.get("title") == b.get("title")), None)
+                if same is not None:
+                    b["monthly"] = same.get("monthly", [])
+        await self.ctx.db.bt_save({k: v for k, v in job.items() if k != "result"}, rep)
 
     async def list(self, kind: str = "backtest") -> list[dict]:
         jobs = [j for j in await self.ctx.db.bt_list(60) if j.get("kind", "backtest") == kind][:20]

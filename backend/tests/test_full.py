@@ -71,3 +71,14 @@ def test_full_job_end_to_end(tmp_path, monkeypatch):
         # alt işler kendi sekmelerinde de görünür
         assert len(c.get("/api/backtest/lab/jobs").json()) == 2 and len(c.get("/api/backtest/carry/jobs").json()) == 3
         assert len(c.get("/api/backtest/full/jobs").json()) == 1
+        carry_c = next(x for x in rep["candidates"] if x["kind"] == "carry")
+        assert carry_c["monthly"] and all(isinstance(m["month"], str) for m in carry_c["monthly"])
+        # eski rapor (aylık veri olmadan kaydedilmiş) okunurken aylık getiriler sonradan eklenir
+        import asyncio
+        ctx = c.app.state.ctx
+        stripped = {**rep, "candidates": [{k: v for k, v in x.items() if k != "monthly"} for x in rep["candidates"]]}
+        job_meta = {k: v for k, v in r.items() if k != "result"}
+        c.portal.call(ctx.db.bt_save, job_meta, stripped)
+        again = c.get(f"/api/backtest/jobs/{j['id']}").json()["result"]
+        assert all("monthly" in x for x in again["candidates"])
+        assert next(x for x in again["candidates"] if x["kind"] == "carry")["monthly"] == carry_c["monthly"]

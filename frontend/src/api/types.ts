@@ -881,6 +881,8 @@ export interface FullCandidate {
   oos_expectancy_r: number | null;
   full_return_pct: number | null;
   how: string;
+  group?: string;
+  monthly?: { month: string; return_pct: number }[];
 }
 
 export interface FullReport {

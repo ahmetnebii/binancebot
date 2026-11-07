@@ -1,13 +1,14 @@
 import clsx from 'clsx';
 import { AlertTriangle, CheckCircle2, Circle, FlaskRound, Loader2, Rocket, Sparkles, Square, Trophy, XCircle } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import { api, withToast } from '../../api/client';
 import type { FullCandidate, FullJob, FullStep } from '../../api/types';
 import { useAsync, useNow } from '../../lib/hooks';
+import { useSettingsCache } from '../trade/useRiskBounds';
 import { fmtDateTime, fmtDuration, fmtNum, pnlClass } from '../../lib/format';
 import { toast, useApp } from '../../store/app';
-import { useConfirm } from '../ui/overlay';
-import { Badge, Button, Card, CardHeader } from '../ui/primitives';
+import { InfoTip, useConfirm } from '../ui/overlay';
+import { Badge, Button, Card, CardHeader, Segmented } from '../ui/primitives';
 
 const isNum = (x: unknown): x is number => typeof x === 'number' && Number.isFinite(x);
 const pct = (v: number | null | undefined, d = 1) => (isNum(v) ? `${v > 0 ? '+' : v < 0 ? '-' : ''}%${Math.abs(v).toFixed(d).replace('.', ',')}` : '—');
@@ -17,6 +18,58 @@ const VERDICT_LABEL = (c: FullCandidate) =>
   c.verdict === 'recommended' ? 'Önerilen' : c.verdict === 'weak' ? 'Zayıf avantaj' : c.forward_ok ? 'Denemeye değer' : 'Elendi';
 const VERDICT_TONE = (c: FullCandidate): 'up' | 'warn' | 'proj' | 'down' =>
   c.verdict === 'recommended' ? 'up' : c.verdict === 'weak' ? 'warn' : c.forward_ok ? 'proj' : 'down';
+
+/* --- kaldıraç senaryosu ------------------------------------------------------- */
+const BORROW_APR = 8; // funding'i büyütmek için ödünç alınan USDT'nin yıllık maliyeti (varsayım)
+type Lev = '1' | '2' | '3' | '5';
+
+interface Scaled {
+  monthly: { month: string; return_pct: number }[];
+  apr: number;
+  dd: number | null;
+  avg: number | null;
+  best: number | null;
+  worst: number | null;
+  pos: number;
+  n: number;
+  danger: boolean;
+}
+
+function scale(c: FullCandidate, k: number): Scaled {
+  const m = (c.monthly ?? []).map((x) => ({
+    month: x.month,
+    return_pct: c.kind === 'carry' ? k * x.return_pct - ((k - 1) * BORROW_APR) / 12 : k * x.return_pct,
+  }));
+  const vals = m.map((x) => x.return_pct);
+  const apr = c.kind === 'carry' ? k * c.oos_apr_pct - (k - 1) * BORROW_APR : k * c.oos_apr_pct;
+  const dd = isNum(c.oos_max_dd_pct) ? c.oos_max_dd_pct * k : null;
+  const worst = vals.length ? Math.min(...vals) : null;
+  return {
+    monthly: m,
+    apr,
+    dd,
+    avg: vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null,
+    best: vals.length ? Math.max(...vals) : null,
+    worst,
+    pos: vals.filter((v) => v > 0).length,
+    n: vals.length,
+    danger: (dd ?? 0) > 30 || (worst ?? 0) < -20 || (c.kind === 'carry' && k >= 5),
+  };
+}
+
+function MonthlyChips({ m }: { m: Scaled['monthly'] }) {
+  if (!m.length) return <span className="text-[11.5px] text-subtle">Aylık veri yok (bu sonuç eski bir analizden olabilir).</span>;
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {m.map((x) => (
+        <div key={x.month} className={clsx('rounded-lg border px-2 py-1 text-[11px]', x.return_pct >= 0 ? 'border-up/30 bg-up/[0.05]' : 'border-down/30 bg-down/[0.05]')}>
+          <div className="text-subtle">{x.month}</div>
+          <div className={clsx('num font-semibold', pnlClass(x.return_pct))}>{pct(x.return_pct, 2)}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function StepIcon({ s }: { s: FullStep['status'] }) {
   if (s === 'done') return <CheckCircle2 className="h-4 w-4 text-up" />;
@@ -103,7 +156,8 @@ function CandidateActions({ c, onDone }: { c: FullCandidate; onDone: () => void 
   );
 }
 
-function HeroCard({ c, title, tone, onDone }: { c: FullCandidate; title: string; tone: 'up' | 'proj'; onDone: () => void }) {
+function HeroCard({ c, title, tone, onDone, k }: { c: FullCandidate; title: string; tone: 'up' | 'proj'; onDone: () => void; k: number }) {
+  const sc = scale(c, k);
   return (
     <div className={clsx('rounded-xl border p-4', tone === 'up' ? 'border-up/40 bg-up/[0.06]' : 'border-proj/40 bg-proj/[0.06]')}>
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -115,8 +169,10 @@ function HeroCard({ c, title, tone, onDone }: { c: FullCandidate; title: string;
           <div className="text-[12.5px] text-muted">{c.label}</div>
         </div>
         <div className="text-right">
-          <div className={clsx('num text-[26px] font-bold', pnlClass(c.oos_apr_pct))}>{pct(c.oos_apr_pct)}</div>
-          <div className="text-[11px] text-subtle">yıllık · hiç görülmemiş {Math.round(c.oos_days)} günde</div>
+          <div className={clsx('num text-[26px] font-bold', pnlClass(sc.avg ?? sc.apr))}>{sc.avg !== null ? `${pct(sc.avg, 2)} / ay` : pct(sc.apr)}</div>
+          <div className="text-[11px] text-subtle">
+            ortalama aylık · yıllık {pct(sc.apr)} · {k}x · hiç görülmemiş {Math.round(c.oos_days)} gün
+          </div>
         </div>
       </div>
       <ul className="mt-3 space-y-0.5 text-[12px] text-fg">
@@ -124,11 +180,23 @@ function HeroCard({ c, title, tone, onDone }: { c: FullCandidate; title: string;
           <li key={d}>• {d}</li>
         ))}
       </ul>
+      <div className="mt-3">
+        <div className="label mb-1.5">Aylık getiriler ({k}x, aramada hiç kullanılmamış dönem)</div>
+        <MonthlyChips m={sc.monthly} />
+      </div>
+      {sc.danger && (
+        <div className="mt-3 flex gap-2 rounded-lg border border-down/30 bg-down/[0.06] px-3 py-2 text-[12px] text-down">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          Bu kaldıraçta risk çok yüksek: kötü bir dönem hesabın büyük kısmını eritebilir{c.kind === 'carry' ? ' ve ani fiyat hareketinde short bacak likide olabilir' : ''}.
+        </div>
+      )}
       <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap gap-2 text-[11.5px] text-muted">
           <Badge tone={VERDICT_TONE(c)}>{VERDICT_LABEL(c)}</Badge>
-          <span>Toplam {pct(c.oos_return_pct, 2)}</span>
-          {isNum(c.oos_max_dd_pct) && <span>· en büyük düşüş -%{fmtNum(c.oos_max_dd_pct, 2)}</span>}
+          {sc.best !== null && <span>En iyi ay {pct(sc.best, 2)}</span>}
+          {sc.worst !== null && <span>· en kötü ay {pct(sc.worst, 2)}</span>}
+          {sc.n > 0 && <span>· {sc.pos}/{sc.n} ay artı</span>}
+          {sc.dd !== null && <span>· en büyük düşüş -%{fmtNum(sc.dd, 1)}</span>}
           {isNum(c.oos_trades) && <span>· {c.oos_trades} işlem</span>}
         </div>
         <CandidateActions c={c} onDone={onDone} />
@@ -141,6 +209,11 @@ function HeroCard({ c, title, tone, onDone }: { c: FullCandidate; title: string;
 export function FullAnalysis({ blocked }: { blocked: boolean }) {
   const jobsMap = useApp((s) => s.backtestJobs);
   const [busy, setBusy] = useState(false);
+  const [lev, setLev] = useState<Lev>('3');
+  const [open, setOpen] = useState<number | null>(null);
+  const settings = useSettingsCache();
+  const baseRisk = settings?.risk?.base_risk_pct;
+  const k = Number(lev);
   const now = useNow(1000);
   useAsync(
     () =>
@@ -244,42 +317,87 @@ export function FullAnalysis({ blocked }: { blocked: boolean }) {
             <div className={clsx('rounded-xl border px-4 py-3 text-[13px]', rep.best ? 'border-up/30 bg-up/[0.05] text-fg' : 'border-warn/30 bg-warn/[0.05] text-fg')}>
               {rep.summary}
             </div>
-            {rep.best && <HeroCard c={rep.best} title="En iyi sonuç" tone="up" onDone={() => full.reload()} />}
-            {rep.trial && <HeroCard c={rep.trial} title={rep.best ? 'İkinci en iyi aday' : 'En umut verici aday (yalnızca simülasyon)'} tone="proj" onDone={() => full.reload()} />}
+            <div className="flex flex-wrap items-center gap-3 rounded-xl border border-line px-3 py-2.5">
+              <div className="text-[12.5px] font-medium text-fg">Kaldıraç</div>
+              <Segmented
+                value={lev}
+                onChange={setLev}
+                options={[
+                  { value: '1', label: '1x' },
+                  { value: '2', label: '2x' },
+                  { value: '3', label: '3x' },
+                  { value: '5', label: '5x' },
+                ]}
+              />
+              <InfoTip>
+                Strateji kurallarında: işlem başına risk ×{k} (1x = mevcut risk ayarın{isNum(baseRisk) ? `, işlem başına %${fmtNum(baseRisk * 100, 2)}` : ''}; aynı
+                stopla pozisyon {k} kat büyür). Funding arbitrajında: pozisyon büyüklüğü ×{k}; fazlası ödünç USDT ile, yıllık %{BORROW_APR} faiz maliyeti
+                düşülür. Getiri de düşüş de yaklaşık {k} kat büyür.
+              </InfoTip>
+              <span className="text-[11.5px] text-subtle">Tüm sonuçlar seçilen kaldıraca göre yeniden hesaplanır (yaklaşık).</span>
+            </div>
+            {rep.best && <HeroCard c={rep.best} title="En iyi sonuç" tone="up" onDone={() => full.reload()} k={k} />}
+            {rep.trial && <HeroCard c={rep.trial} title={rep.best ? 'İkinci en iyi aday' : 'En umut verici aday (yalnızca simülasyon)'} tone="proj" onDone={() => full.reload()} k={k} />}
 
             <div className="overflow-x-auto rounded-xl border border-line">
-              <table className="w-full min-w-[820px] text-[12px]">
+              <table className="w-full min-w-[900px] text-[12px]">
                 <thead>
                   <tr className="text-[11px] text-subtle">
                     <th className="px-2 py-1.5 text-left font-medium">#</th>
                     <th className="px-2 py-1.5 text-left font-medium">Yöntem</th>
                     <th className="px-2 py-1.5 text-left font-medium">Karar</th>
-                    <th className="px-2 py-1.5 text-right font-medium">Yıllık (görülmemiş dönem)</th>
-                    <th className="px-2 py-1.5 text-right font-medium">Toplam</th>
+                    <th className="px-2 py-1.5 text-right font-medium">Aylık ort.</th>
+                    <th className="px-2 py-1.5 text-right font-medium">En iyi ay</th>
+                    <th className="px-2 py-1.5 text-right font-medium">En kötü ay</th>
+                    <th className="px-2 py-1.5 text-right font-medium">Artı ay</th>
+                    <th className="px-2 py-1.5 text-right font-medium">Yıllık</th>
                     <th className="px-2 py-1.5 text-right font-medium">En büyük düşüş</th>
-                    <th className="px-2 py-1.5 text-right font-medium">İşlem</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {rep.candidates.map((c, i) => (
-                    <tr key={`${c.step}-${i}`} className="border-t border-line align-top">
-                      <td className="num px-2 py-1.5 text-subtle">{i + 1}</td>
-                      <td className="px-2 py-1.5">
-                        <div className="text-fg">{c.title}</div>
-                        <div className="text-[11px] text-subtle">{c.label}</div>
-                      </td>
-                      <td className="px-2 py-1.5">
-                        <Badge tone={VERDICT_TONE(c)}>{VERDICT_LABEL(c)}</Badge>
-                      </td>
-                      <td className={clsx('num px-2 py-1.5 text-right font-semibold', pnlClass(c.oos_apr_pct))}>{pct(c.oos_apr_pct)}</td>
-                      <td className={clsx('num px-2 py-1.5 text-right', pnlClass(c.oos_return_pct))}>{pct(c.oos_return_pct, 2)}</td>
-                      <td className="num px-2 py-1.5 text-right text-down">{isNum(c.oos_max_dd_pct) ? `-%${fmtNum(c.oos_max_dd_pct, 2)}` : '—'}</td>
-                      <td className="num px-2 py-1.5 text-right">{c.oos_trades ?? '—'}</td>
-                    </tr>
-                  ))}
+                  {rep.candidates.map((c, i) => {
+                    const sc = scale(c, k);
+                    return (
+                      <Fragment key={`${c.step}-${i}`}>
+                        <tr
+                          onClick={() => setOpen(open === i ? null : i)}
+                          className={clsx('cursor-pointer border-t border-line align-top hover:bg-elevated/60', open === i && 'bg-accent/[0.05]')}
+                        >
+                          <td className="num px-2 py-1.5 text-subtle">{i + 1}</td>
+                          <td className="px-2 py-1.5">
+                            <div className="text-fg">{c.title}</div>
+                            <div className="text-[11px] text-subtle">{c.label}</div>
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <Badge tone={VERDICT_TONE(c)}>{VERDICT_LABEL(c)}</Badge>
+                          </td>
+                          <td className={clsx('num px-2 py-1.5 text-right font-semibold', pnlClass(sc.avg ?? 0))}>{pct(sc.avg, 2)}</td>
+                          <td className={clsx('num px-2 py-1.5 text-right', pnlClass(sc.best ?? 0))}>{pct(sc.best, 2)}</td>
+                          <td className={clsx('num px-2 py-1.5 text-right', pnlClass(sc.worst ?? 0))}>{pct(sc.worst, 2)}</td>
+                          <td className="num px-2 py-1.5 text-right">{sc.n ? `${sc.pos}/${sc.n}` : '—'}</td>
+                          <td className={clsx('num px-2 py-1.5 text-right', pnlClass(sc.apr))}>{pct(sc.apr)}</td>
+                          <td className={clsx('num px-2 py-1.5 text-right', sc.danger ? 'font-semibold text-down' : 'text-down')}>
+                            {sc.dd !== null ? `-%${fmtNum(sc.dd, 1)}` : '—'}
+                          </td>
+                        </tr>
+                        {open === i && (
+                          <tr className="border-t border-line bg-elevated/30">
+                            <td />
+                            <td colSpan={8} className="px-2 py-2">
+                              <MonthlyChips m={sc.monthly} />
+                              <div className="mt-2">
+                                <CandidateActions c={c} onDone={() => full.reload()} />
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
+            <p className="text-[11.5px] text-subtle">Satıra tıklayınca o yöntemin her ayı ayrı ayrı açılır.</p>
 
             <div className="rounded-xl border border-line px-3 py-2 text-[12px] text-muted">
               <b className="text-fg">Kalabalık verisi:</b>{' '}

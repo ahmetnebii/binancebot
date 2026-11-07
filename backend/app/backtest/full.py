@@ -30,6 +30,39 @@ STEPS: list[tuple[str, str, float, str, dict[str, Any]]] = [
 VERDICT_RANK = {"recommended": 3, "weak": 2}
 
 
+def _month(ts_ms: int) -> str:
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m")
+
+
+def lab_monthly(res: dict, group: dict) -> list[dict]:
+    """Strateji adayının hiç görülmemiş (final sınavı) dönemdeki aylık getirileri (%)."""
+    full = group.get("full") or {}
+    months = full.get("monthly") or []
+    start = (res.get("period") or {}).get("split2")
+    if not start:
+        return []
+    m0 = _month(int(start))
+    return [{"month": m["month"], "return_pct": float(m["return_pct"])} for m in months if m["month"] >= m0]
+
+
+def carry_monthly(res: dict) -> list[dict]:
+    return [{"month": m["month"], "return_pct": float(m["return_pct"])} for m in (res.get("portfolio") or {}).get("monthly_test") or []]
+
+
+def candidate_monthly(c: dict, res: Optional[dict]) -> list[dict]:
+    if not res:
+        return []
+    if c["kind"] == "carry":
+        return carry_monthly(res)
+    key = c.get("group")
+    name = c["title"].replace("Strateji · ", "")
+    for g in res.get("groups") or []:
+        if (key and g.get("key") == key) or (not key and g.get("name") == name):
+            return lab_monthly(res, g)
+    return []
+
+
 def _lab_candidates(step_key: str, job_id: str, res: dict) -> list[dict]:
     out = []
     period = res.get("period") or {}
@@ -41,7 +74,8 @@ def _lab_candidates(step_key: str, job_id: str, res: dict) -> list[dict]:
         f = b["final"]
         ret = float(f.get("return_pct") or 0.0)
         out.append({
-            "kind": "lab", "step": step_key, "job_id": job_id,
+            "kind": "lab", "step": step_key, "job_id": job_id, "group": g.get("key"),
+            "monthly": lab_monthly(res, g),
             "title": f"Strateji · {g.get('name')}",
             "label": b.get("label"), "details": b.get("details", []),
             "verdict": g.get("verdict", "none"), "forward_ok": bool(g.get("forward_ok")),
@@ -62,7 +96,7 @@ def _carry_candidate(step_key: str, title: str, job_id: str, res: dict) -> Optio
     pr = p["params"]
     days = max(1.0, ((res.get("period") or {}).get("end", 0) - (res.get("period") or {}).get("split", 0)) / DAY)
     return {
-        "kind": "carry", "step": step_key, "job_id": job_id, "title": title,
+        "kind": "carry", "step": step_key, "job_id": job_id, "title": title, "monthly": carry_monthly(res),
         "label": f"İlk {pr['top_n']} coin · son {pr['k']} dönem ort. yıllık %{pr['enter_apr']:g} üstü",
         "details": [
             f"{res.get('coins_used', len(res.get('coins', [])))} coin analiz edildi"
