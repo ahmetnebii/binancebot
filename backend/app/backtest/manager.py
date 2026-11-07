@@ -1070,3 +1070,44 @@ class BacktestManager:
             await self.ctx.db.bt_save(job)
         finally:
             self._publish(job, force=True)
+
+    async def full_candidate_trades(self, job_id: str, idx: int) -> dict:
+        """Tam analiz raporundaki bir adayın, aramada hiç kullanılmamış dönemdeki işlemleri."""
+        job = await self.ctx.db.bt_get(job_id)
+        if job is None or job.get("kind") != "full" or not job.get("result"):
+            raise ValueError("Tam analiz raporu bulunamadı")
+        cands = job["result"].get("candidates") or []
+        if not 0 <= idx < len(cands):
+            raise ValueError("Aday bulunamadı")
+        c = cands[idx]
+        sub = await self.ctx.db.bt_get(c["job_id"]) if c.get("job_id") else None
+        res = (sub or {}).get("result")
+        if not res:
+            raise ValueError("Bu adayın analiz sonucu bulunamadı (silinmiş olabilir)")
+        if c["kind"] == "lab":
+            name = c["title"].replace("Strateji · ", "")
+            g = next((g for g in res.get("groups") or [] if (c.get("group") and g.get("key") == c["group"]) or g.get("name") == name), None)
+            full = (g or {}).get("full") or {}
+            split2 = (res.get("period") or {}).get("split2", 0)
+            trades = [t for t in full.get("trades") or [] if t.get("entry_time", 0) >= split2]
+            return {"kind": "lab", "trades": trades, "count": len(trades)}
+        p = res.get("portfolio") or {}
+        if "trades_test" in p:
+            return {"kind": "carry", "trades": p["trades_test"], "count": len(p["trades_test"])}
+        # eski funding sonucu: önbellekteki funding geçmişinden aynı kuralla yeniden hesapla
+        import numpy as np
+
+        from .carry import funding_matrix, portfolio_trades, run_portfolio
+        period = res["period"]
+        excluded = set(res.get("excluded_no_spot") or [])
+        symbols = [s for s in (sub.get("config") or {}).get("symbols", []) if s not in excluded]
+        data = await self._history().load(symbols, period["start"], period["end"], progress=lambda f, m: None,
+                                          cancelled=lambda: False, update_tail=False, funding_only=True)
+        w, R, syms = funding_matrix(data, symbols, period["start"], period["end"])
+        pr = p["params"]
+        cost_rt = res["costs"]["round_trip_pct"] / 100.0
+        eff = res["costs"]["capital_efficiency"]
+        _, _, hist = await asyncio.to_thread(run_portfolio, R, pr["k"], pr["enter_apr"], pr["exit_apr"], pr["top_n"], cost_rt, eff)
+        split_idx = int(np.searchsorted(w, period["split"]))
+        trades = portfolio_trades(R, w, syms, hist, pr["top_n"], cost_rt, eff, from_idx=split_idx)
+        return {"kind": "carry", "trades": trades, "count": len(trades), "recomputed": True}

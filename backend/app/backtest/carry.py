@@ -176,6 +176,40 @@ def run_portfolio(R: np.ndarray, k: int, enter_apr: float, exit_apr: float, top_
     return ret, held_frac, history
 
 
+def portfolio_trades(R: np.ndarray, w: np.ndarray, syms: list[str], hist: list[set[int]], top_n: int,
+                     cost_rt: float, eff: float, from_idx: int = 0) -> list[dict]:
+    """Portföyün coin bazında giriş/çıkış kayıtları ("işlemler"). from_idx: yalnızca bu pencereden sonra başlayanlar.
+    funding_pct / net_pct: o coine ayrılan sermaye diliminin getirisi (%), net = funding − giriş/çıkış maliyeti."""
+    out: list[dict] = []
+    open_at: dict[int, int] = {}
+    prev: set[int] = set()
+    n = len(hist)
+
+    def close(c: int, j_end: int, still_open: bool) -> None:
+        j0 = open_at.pop(c)
+        if j0 < from_idx:
+            return
+        fund = float(np.nansum(R[c, j0:j_end])) * eff
+        cost = cost_rt * eff * (0.5 if still_open else 1.0)
+        out.append({
+            "symbol": syms[c], "entry_time": int(w[j0]), "exit_time": int(w[j_end]) if j_end < len(w) else int(w[-1] + WINDOW_MS),
+            "windows": j_end - j0, "hours": (j_end - j0) * 8, "funding_pct": fund * 100.0, "cost_pct": cost * 100.0,
+            "net_pct": (fund - cost) * 100.0, "open": still_open,
+        })
+
+    for j in range(n):
+        cur = hist[j]
+        for c in cur - prev:
+            open_at[c] = j
+        for c in prev - cur:
+            close(c, j, False)
+        prev = cur
+    for c in list(open_at):
+        close(c, n, True)
+    out.sort(key=lambda t: t["entry_time"])
+    return out
+
+
 def analyze(data: HistoryData, symbols: list[str], start: int, end: int, *, spot_fee: float = 0.001,
             perp_fee: float = 0.0005, slippage: float = 0.0002, leverage: float = 3.0,
             progress=None) -> dict:
@@ -234,6 +268,7 @@ def analyze(data: HistoryData, symbols: list[str], start: int, end: int, *, spot
             progress(0.6 + 0.35 * (gi + 1) / len(pgrid), "Portföy parametreleri eğitim döneminde seçiliyor")
     _, k, e, x, n = best_p
     ret, held, hist = run_portfolio(R, k, e, x, n, cost_rt, eff)
+    trades_test = portfolio_trades(R, w, syms, hist, n, cost_rt, eff, from_idx=split)
     cum = np.cumsum(ret)
     peak = np.maximum.accumulate(np.r_[0.0, cum])[1:]
     initial = 1000.0
@@ -255,6 +290,7 @@ def analyze(data: HistoryData, symbols: list[str], start: int, end: int, *, spot
         "test": _metrics(seg(ret, "test"), seg(held, "test"), seg(w, "test")),
         "equity": equity,
         "monthly_test": _monthly(seg(ret, "test"), seg(w, "test")),
+        "trades_test": trades_test[-1000:],
         "now": now[:15],
     }
     t = portfolio["test"]

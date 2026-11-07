@@ -166,6 +166,11 @@ export const api = {
   optimizeJobs: () => request<OptimizeJob[]>('GET', '/api/backtest/optimize/jobs'),
   optimizeJob: (id: string) => request<OptimizeJob>('GET', `/api/backtest/jobs/${encodeURIComponent(id)}`),
   runFull: () => request<FullJob>('POST', '/api/backtest/full'),
+  fullTrades: (jobId: string, idx: number) =>
+    request<{ kind: 'lab' | 'carry'; count: number; recomputed?: boolean; trades: Record<string, unknown>[] }>(
+      'GET',
+      `/api/backtest/full/${encodeURIComponent(jobId)}/trades/${idx}`,
+    ),
   fullJobs: () => request<FullJob[]>('GET', '/api/backtest/full/jobs'),
   fullJob: (id: string) => request<FullJob>('GET', `/api/backtest/jobs/${encodeURIComponent(id)}`),
   runCarry: (cfg: { days?: number; top_n?: number; spot_fee?: number; leverage?: number; universe?: 'binance' | 'all' | 'cross' }) => request<CarryJob>('POST', '/api/backtest/carry', cfg),

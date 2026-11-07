@@ -82,3 +82,21 @@ def test_full_job_end_to_end(tmp_path, monkeypatch):
         again = c.get(f"/api/backtest/jobs/{j['id']}").json()["result"]
         assert all("monthly" in x for x in again["candidates"])
         assert next(x for x in again["candidates"] if x["kind"] == "carry")["monthly"] == carry_c["monthly"]
+        # aday işlemleri: funding (giriş/çıkış kaydı) ve strateji işlemleri
+        ci = next(i for i, x in enumerate(rep["candidates"]) if x["kind"] == "carry")
+        tr = c.get(f"/api/backtest/full/{j['id']}/trades/{ci}").json()
+        assert tr["kind"] == "carry" and tr["count"] == len(tr["trades"]) and tr["count"] > 0
+        t0_ = tr["trades"][0]
+        assert {"symbol", "entry_time", "exit_time", "funding_pct", "net_pct"} <= set(t0_)
+        li = next(i for i, x in enumerate(rep["candidates"]) if x["kind"] == "lab")
+        lt = c.get(f"/api/backtest/full/{j['id']}/trades/{li}").json()
+        assert lt["kind"] == "lab" and isinstance(lt["trades"], list)
+        assert c.get(f"/api/backtest/full/{j['id']}/trades/999").status_code == 404
+        # eski funding sonucu (işlem kaydı olmadan): önbellekten yeniden hesaplanır
+        sub_id = rep["candidates"][ci]["job_id"]
+        sub = c.get(f"/api/backtest/jobs/{sub_id}").json()
+        res_old = sub["result"]
+        res_old["portfolio"].pop("trades_test")
+        c.portal.call(ctx.db.bt_save, {k: v for k, v in sub.items() if k != "result"}, res_old)
+        tr2 = c.get(f"/api/backtest/full/{j['id']}/trades/{ci}").json()
+        assert tr2.get("recomputed") and tr2["count"] > 0

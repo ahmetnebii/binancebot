@@ -74,7 +74,7 @@ def _lab_candidates(step_key: str, job_id: str, res: dict) -> list[dict]:
         f = b["final"]
         ret = float(f.get("return_pct") or 0.0)
         out.append({
-            "kind": "lab", "step": step_key, "job_id": job_id, "group": g.get("key"),
+            "kind": "lab", "step": step_key, "job_id": job_id, "group": g.get("key"), "binance_only": True,
             "monthly": lab_monthly(res, g),
             "title": f"Strateji · {g.get('name')}",
             "label": b.get("label"), "details": b.get("details", []),
@@ -97,6 +97,7 @@ def _carry_candidate(step_key: str, title: str, job_id: str, res: dict) -> Optio
     days = max(1.0, ((res.get("period") or {}).get("end", 0) - (res.get("period") or {}).get("split", 0)) / DAY)
     return {
         "kind": "carry", "step": step_key, "job_id": job_id, "title": title, "monthly": carry_monthly(res),
+        "binance_only": res.get("universe", "binance") != "cross",
         "label": f"İlk {pr['top_n']} coin · son {pr['k']} dönem ort. yıllık %{pr['enter_apr']:g} üstü",
         "details": [
             f"{res.get('coins_used', len(res.get('coins', [])))} coin analiz edildi"
@@ -107,7 +108,8 @@ def _carry_candidate(step_key: str, title: str, job_id: str, res: dict) -> Optio
         ],
         "verdict": res.get("verdict", "none"), "forward_ok": False,
         "oos_return_pct": t["return_pct"], "oos_days": days, "oos_apr_pct": t["apr_pct"],
-        "oos_max_dd_pct": t["max_drawdown_pct"], "oos_trades": None, "oos_expectancy_r": None,
+        "oos_max_dd_pct": t["max_drawdown_pct"], "oos_trades": len(p["trades_test"]) if "trades_test" in p else None,
+        "oos_expectancy_r": None,
         "full_return_pct": None,
         "how": "Kuralı canlı funding radarına ve sanal portföye bağlar. Gerçekte uygulama adımları Funding sekmesinde.",
     }

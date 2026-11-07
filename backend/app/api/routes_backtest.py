@@ -156,6 +156,14 @@ async def full_run(request: Request) -> dict:
         raise HTTPException(409, str(exc)) from exc
 
 
+@router.get("/full/{job_id}/trades/{idx}")
+async def full_trades(job_id: str, idx: int, request: Request) -> dict:
+    try:
+        return await manager(request).full_candidate_trades(job_id, idx)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
 @router.get("/full/jobs")
 async def full_jobs(request: Request) -> list[dict]:
     return await manager(request).list("full")

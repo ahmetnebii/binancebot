@@ -254,7 +254,7 @@ class BinanceHistory:
                 if funding_only:
                     progress(i / max(1, len(symbols)), f"{sym} funding geçmişi alınıyor ({i + 1}/{len(symbols)})")
                     try:
-                        f = await self._load_funding(session, sym, start, end, True)
+                        f = await self._load_funding(session, sym, start, end, update_tail)
                     except Exception as exc:
                         log.info("%s funding geçmişi alınamadı: %s", sym, exc)
                         out.missing.append(sym)

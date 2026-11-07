@@ -5,10 +5,10 @@ import { api, withToast } from '../../api/client';
 import type { FullCandidate, FullJob, FullStep } from '../../api/types';
 import { useAsync, useNow } from '../../lib/hooks';
 import { useSettingsCache } from '../trade/useRiskBounds';
-import { fmtDateTime, fmtDuration, fmtNum, pnlClass } from '../../lib/format';
+import { fmtDateTime, fmtDuration, fmtNum, fmtPrice, fmtR, pnlClass } from '../../lib/format';
 import { toast, useApp } from '../../store/app';
 import { InfoTip, useConfirm } from '../ui/overlay';
-import { Badge, Button, Card, CardHeader, Segmented } from '../ui/primitives';
+import { Badge, Button, Card, CardHeader, Segmented, Switch } from '../ui/primitives';
 
 const isNum = (x: unknown): x is number => typeof x === 'number' && Number.isFinite(x);
 const pct = (v: number | null | undefined, d = 1) => (isNum(v) ? `${v > 0 ? '+' : v < 0 ? '-' : ''}%${Math.abs(v).toFixed(d).replace('.', ',')}` : '—');
@@ -67,6 +67,89 @@ function MonthlyChips({ m }: { m: Scaled['monthly'] }) {
           <div className={clsx('num font-semibold', pnlClass(x.return_pct))}>{pct(x.return_pct, 2)}</div>
         </div>
       ))}
+    </div>
+  );
+}
+
+const isBinance = (c: FullCandidate) => c.binance_only !== false && c.step !== 'carry_cross';
+const RANK = (c: FullCandidate) => (c.verdict === 'recommended' ? 3 : c.verdict === 'weak' ? 2 : c.forward_ok ? 1 : 0);
+
+function TradesPanel({ jobId, idx, kind, k }: { jobId: string; idx: number; kind: 'lab' | 'carry'; k: number }) {
+  const [show, setShow] = useState(false);
+  const data = useAsync(() => (show ? api.fullTrades(jobId, idx) : Promise.resolve(undefined)), [show, jobId, idx]);
+  if (!show) {
+    return (
+      <Button size="xs" variant="ghost" onClick={() => setShow(true)}>
+        İşlemleri göster
+      </Button>
+    );
+  }
+  if (data.loading) return <span className="text-[11.5px] text-subtle">İşlemler yükleniyor…</span>;
+  if (data.error) return <span className="text-[11.5px] text-down">İşlemler alınamadı: {data.error}</span>;
+  const tr = data.data?.trades ?? [];
+  const sc = (v: number) => (kind === 'carry' ? v * k : v);
+  return (
+    <div className="space-y-1.5">
+      <div className="text-[11.5px] text-muted">
+        <b className="text-fg">{tr.length} işlem</b> (aramada hiç kullanılmamış dönem).{' '}
+        {kind === 'carry'
+          ? `Funding'de bir işlem = bir coine girip çıkmak (spot al + vadeli short). Yüzdeler o coine ayrılan sermaye payına göre, ${k}x.`
+          : 'R: riske göre kazanç (1R = işlem başına riske edilen tutar).'}
+      </div>
+      <div className="max-h-80 overflow-auto rounded-lg border border-line">
+        <table className="w-full min-w-[640px] text-[11.5px]">
+          <thead className="sticky top-0 bg-surface">
+            {kind === 'carry' ? (
+              <tr className="text-[10.5px] text-subtle">
+                <th className="px-2 py-1 text-left font-medium">Coin</th>
+                <th className="px-2 py-1 text-left font-medium">Giriş</th>
+                <th className="px-2 py-1 text-left font-medium">Çıkış</th>
+                <th className="px-2 py-1 text-right font-medium">Süre</th>
+                <th className="px-2 py-1 text-right font-medium">Toplanan funding</th>
+                <th className="px-2 py-1 text-right font-medium">Maliyet</th>
+                <th className="px-2 py-1 text-right font-medium">Net</th>
+              </tr>
+            ) : (
+              <tr className="text-[10.5px] text-subtle">
+                <th className="px-2 py-1 text-left font-medium">Coin</th>
+                <th className="px-2 py-1 text-left font-medium">Yön</th>
+                <th className="px-2 py-1 text-left font-medium">Giriş</th>
+                <th className="px-2 py-1 text-left font-medium">Çıkış</th>
+                <th className="px-2 py-1 text-right font-medium">Giriş / çıkış fiyatı</th>
+                <th className="px-2 py-1 text-right font-medium">R</th>
+                <th className="px-2 py-1 text-left font-medium">Neden</th>
+              </tr>
+            )}
+          </thead>
+          <tbody>
+            {tr.map((t, i) =>
+              kind === 'carry' ? (
+                <tr key={i} className="border-t border-line">
+                  <td className="px-2 py-1 font-medium text-fg">{String(t.symbol).replace('USDT', '')}</td>
+                  <td className="px-2 py-1 text-muted">{fmtDateTime(t.entry_time as number)}</td>
+                  <td className="px-2 py-1 text-muted">{t.open ? 'açık' : fmtDateTime(t.exit_time as number)}</td>
+                  <td className="num px-2 py-1 text-right">{fmtNum((t.hours as number) / 24, 1)} gün</td>
+                  <td className={clsx('num px-2 py-1 text-right', pnlClass(t.funding_pct as number))}>{pct(sc(t.funding_pct as number), 2)}</td>
+                  <td className="num px-2 py-1 text-right text-down">-%{fmtNum(sc(t.cost_pct as number), 2)}</td>
+                  <td className={clsx('num px-2 py-1 text-right font-semibold', pnlClass(t.net_pct as number))}>{pct(sc(t.net_pct as number), 2)}</td>
+                </tr>
+              ) : (
+                <tr key={i} className="border-t border-line">
+                  <td className="px-2 py-1 font-medium text-fg">{String(t.symbol).replace('USDT', '')}</td>
+                  <td className={clsx('px-2 py-1', t.side === 'LONG' ? 'text-up' : 'text-down')}>{String(t.side)}</td>
+                  <td className="px-2 py-1 text-muted">{fmtDateTime(t.entry_time as number)}</td>
+                  <td className="px-2 py-1 text-muted">{fmtDateTime(t.exit_time as number)}</td>
+                  <td className="num px-2 py-1 text-right">
+                    {fmtPrice(t.entry_price as number)} → {fmtPrice(t.exit_price as number)}
+                  </td>
+                  <td className={clsx('num px-2 py-1 text-right font-semibold', pnlClass(t.r as number))}>{fmtR(t.r as number)}</td>
+                  <td className="px-2 py-1 text-subtle">{String(t.reason ?? '')}</td>
+                </tr>
+              ),
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -156,7 +239,7 @@ function CandidateActions({ c, onDone }: { c: FullCandidate; onDone: () => void 
   );
 }
 
-function HeroCard({ c, title, tone, onDone, k }: { c: FullCandidate; title: string; tone: 'up' | 'proj'; onDone: () => void; k: number }) {
+function HeroCard({ c, title, tone, onDone, k, jobId, idx }: { c: FullCandidate; title: string; tone: 'up' | 'proj'; onDone: () => void; k: number; jobId: string; idx: number }) {
   const sc = scale(c, k);
   return (
     <div className={clsx('rounded-xl border p-4', tone === 'up' ? 'border-up/40 bg-up/[0.06]' : 'border-proj/40 bg-proj/[0.06]')}>
@@ -202,6 +285,11 @@ function HeroCard({ c, title, tone, onDone, k }: { c: FullCandidate; title: stri
         <CandidateActions c={c} onDone={onDone} />
       </div>
       <p className="mt-2 text-[11px] text-subtle">{c.how}</p>
+      {idx >= 0 && (
+        <div className="mt-2">
+          <TradesPanel jobId={jobId} idx={idx} kind={c.kind} k={k} />
+        </div>
+      )}
     </div>
   );
 }
@@ -211,6 +299,7 @@ export function FullAnalysis({ blocked }: { blocked: boolean }) {
   const [busy, setBusy] = useState(false);
   const [lev, setLev] = useState<Lev>('3');
   const [open, setOpen] = useState<number | null>(null);
+  const [binanceOnly, setBinanceOnly] = useState(true);
   const settings = useSettingsCache();
   const baseRisk = settings?.risk?.base_risk_pct;
   const k = Number(lev);
@@ -248,6 +337,23 @@ export function FullAnalysis({ blocked }: { blocked: boolean }) {
       setBusy(false);
     }
   };
+
+  const view = useMemo(() => {
+    if (!rep) return null;
+    const all = rep.candidates.map((c, i) => ({ c, i }));
+    const list = binanceOnly ? all.filter(({ c }) => isBinance(c)) : all;
+    const sorted = [...list].sort((a, b) => RANK(b.c) - RANK(a.c) || b.c.oos_apr_pct - a.c.oos_apr_pct);
+    const best = sorted.find(({ c }) => (c.verdict === 'recommended' || c.verdict === 'weak') && c.oos_apr_pct > 0) ?? null;
+    const trial = sorted.find((x) => x !== best && x.c.oos_apr_pct > 0 && (x.c.forward_ok || x.c.verdict !== 'none')) ?? null;
+    const hidden = all.length - list.length;
+    let summary = rep.summary;
+    if (binanceOnly && hidden > 0) {
+      summary = best
+        ? `Yalnızca Binance'te yapılabilen yöntemler arasında en iyisi: ${best.c.title} — hiç görülmemiş dönemde yıllık %${best.c.oos_apr_pct.toFixed(1)} (1x). Önce Simülasyon'da dene.`
+        : 'Yalnızca Binance\'te yapılabilen yöntemler arasında doğrulanmış kâr eden bulunamadı.';
+    }
+    return { rows: sorted, best, trial, hidden, summary };
+  }, [rep, binanceOnly]);
 
   const pctDone = Math.max(0, Math.min(100, latest?.progress.pct ?? 0));
   const elapsed = latest ? now - latest.created_at : 0;
@@ -315,9 +421,19 @@ export function FullAnalysis({ blocked }: { blocked: boolean }) {
           />
           <div className="space-y-4 px-4 pb-5 pt-1">
             <div className={clsx('rounded-xl border px-4 py-3 text-[13px]', rep.best ? 'border-up/30 bg-up/[0.05] text-fg' : 'border-warn/30 bg-warn/[0.05] text-fg')}>
-              {rep.summary}
+              {view?.summary ?? rep.summary}
             </div>
             <div className="flex flex-wrap items-center gap-3 rounded-xl border border-line px-3 py-2.5">
+              <label className="flex cursor-pointer items-center gap-2 text-[12.5px] font-medium text-fg">
+                <Switch checked={binanceOnly} onChange={setBinanceOnly} size="sm" />
+                Yalnızca Binance
+              </label>
+              <InfoTip>
+                Açıkken yalnızca tamamen Binance içinde yapılabilen yöntemler gösterilir. Kapalıyken “çapraz borsa” yöntemi de görünür: o yöntem coini
+                Bybit / OKX / Gate gibi başka bir borsada spot almayı gerektirir.
+              </InfoTip>
+              {view && view.hidden > 0 && binanceOnly && <span className="text-[11.5px] text-subtle">{view.hidden} başka borsa gerektiren sonuç gizlendi</span>}
+              <span className="mx-1 hidden h-5 w-px bg-line sm:block" />
               <div className="text-[12.5px] font-medium text-fg">Kaldıraç</div>
               <Segmented
                 value={lev}
@@ -336,8 +452,20 @@ export function FullAnalysis({ blocked }: { blocked: boolean }) {
               </InfoTip>
               <span className="text-[11.5px] text-subtle">Tüm sonuçlar seçilen kaldıraca göre yeniden hesaplanır (yaklaşık).</span>
             </div>
-            {rep.best && <HeroCard c={rep.best} title="En iyi sonuç" tone="up" onDone={() => full.reload()} k={k} />}
-            {rep.trial && <HeroCard c={rep.trial} title={rep.best ? 'İkinci en iyi aday' : 'En umut verici aday (yalnızca simülasyon)'} tone="proj" onDone={() => full.reload()} k={k} />}
+            {view?.best && (
+              <HeroCard c={view.best.c} idx={view.best.i} jobId={shown.id} title="En iyi sonuç" tone="up" onDone={() => full.reload()} k={k} />
+            )}
+            {view?.trial && (
+              <HeroCard
+                c={view.trial.c}
+                idx={view.trial.i}
+                jobId={shown.id}
+                title={view.best ? 'İkinci en iyi aday' : 'En umut verici aday (yalnızca simülasyon)'}
+                tone="proj"
+                onDone={() => full.reload()}
+                k={k}
+              />
+            )}
 
             <div className="overflow-x-auto rounded-xl border border-line">
               <table className="w-full min-w-[900px] text-[12px]">
@@ -355,7 +483,7 @@ export function FullAnalysis({ blocked }: { blocked: boolean }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {rep.candidates.map((c, i) => {
+                  {(view?.rows ?? []).map(({ c, i }, pos) => {
                     const sc = scale(c, k);
                     return (
                       <Fragment key={`${c.step}-${i}`}>
@@ -363,7 +491,7 @@ export function FullAnalysis({ blocked }: { blocked: boolean }) {
                           onClick={() => setOpen(open === i ? null : i)}
                           className={clsx('cursor-pointer border-t border-line align-top hover:bg-elevated/60', open === i && 'bg-accent/[0.05]')}
                         >
-                          <td className="num px-2 py-1.5 text-subtle">{i + 1}</td>
+                          <td className="num px-2 py-1.5 text-subtle">{pos + 1}</td>
                           <td className="px-2 py-1.5">
                             <div className="text-fg">{c.title}</div>
                             <div className="text-[11px] text-subtle">{c.label}</div>
@@ -385,8 +513,11 @@ export function FullAnalysis({ blocked }: { blocked: boolean }) {
                             <td />
                             <td colSpan={8} className="px-2 py-2">
                               <MonthlyChips m={sc.monthly} />
-                              <div className="mt-2">
+                              <div className="mt-2 flex flex-wrap items-start gap-3">
                                 <CandidateActions c={c} onDone={() => full.reload()} />
+                              </div>
+                              <div className="mt-2">
+                                <TradesPanel jobId={shown.id} idx={i} kind={c.kind} k={k} />
                               </div>
                             </td>
                           </tr>

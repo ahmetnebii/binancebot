@@ -882,6 +882,7 @@ export interface FullCandidate {
   full_return_pct: number | null;
   how: string;
   group?: string;
+  binance_only?: boolean;
   monthly?: { month: string; return_pct: number }[];
 }
 
