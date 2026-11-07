@@ -73,6 +73,10 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
     if (dist / "assets").is_dir():
         app.mount("/assets", StaticFiles(directory=dist / "assets"), name="assets")
 
+    @app.api_route("/api/{rest:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"], include_in_schema=False)
+    async def api_not_found(rest: str):
+        raise HTTPException(404, "Bu API ucu bu sunucuda yok. Bot eski sürümle çalışıyor olabilir: tüm bot pencerelerini kapatıp yeniden başlatın.")
+
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa(full_path: str):
         if full_path.startswith("api/") or full_path == "ws":
