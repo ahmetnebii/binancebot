@@ -475,6 +475,28 @@ Geçmiş 3 yıla kadar çıkabilir; ilk indirme ~20–30 dk sürer, sonra `data/
 
 Kural canlıda S6 olarak çalışır (`strategies/lab_rules.py`); hızlı tarama, portföy simülasyonu ve canlı tarama aynı sinyal kodunu kullanır. S6 varsayılan EV eşiğinden ve çıkış profilinden muaftır (kendi doğrulanmış çıkışını kullanır).
 
+### Funding arbitrajı (carry)
+
+Delta-nötr strateji: spotta al + vadelide aynı adette short → fiyat riski yok, funding toplanır. Analiz önbellekteki funding geçmişini kullanır; 8 saatlik pencereler (4 saatlik coinlerde iki ödeme toplanır). Kural: son `k` pencere ortalaması yıllık `enter_apr` üstündeyse gir, `exit_apr` altına inince çık; portföyde ortalaması en yüksek `top_n` coin (tutulan coin ilk 2N'de ve eşik üstünde kaldıkça bırakılmaz). Parametreler eğitimde (%60) seçilir, sonuç test döneminde (%40) raporlanır. Maliyet: giriş + çıkışta spot ve vadeli komisyon + iki bacak kayma; sermaye verimi 1/(1+1/kaldıraç). Karar: test yıllık ≥ %8, düşüş ≤ %5, ayların ≥ %70'i artı → `recommended`; yıllık > %3 → `weak`.
+
+| Metot | Yol | Gövde | Yanıt |
+|---|---|---|---|
+| POST | `/api/backtest/carry` | `{days?: 90–1095, top_n?: 5–60, spot_fee?, leverage?: 1–10}` | `CarryJob` (`kind: "carry"`) |
+| GET | `/api/backtest/carry/jobs` | — | `CarryJob[]` |
+| POST | `/api/backtest/carry/{id}/apply` | — | Seçilen kural `kv:carry_settings`'e yazılır (canlı radar + sanal portföy bunu kullanır) |
+
+### Kalabalık verisi ve funding radarı (`/api/crowd`)
+
+`CrowdCollector` her saat ilk 30 coin için Binance'ten açık pozisyon (OI), tüm hesap ve büyük hesap long/short oranları, taker alım/satım oranı ve funding geçmişini çekip `crowd` ve `funding_hist` tablolarına yazar (ilk seferde ~20 gün geri doldurur; Binance bu verileri yalnızca ~30 gün geriye verir). Her funding dönemi bitince sanal funding portföyü (`kv:carry_paper`, 1.000 USDT) aynı kuralla güncellenir; coin değişikliği Telegram'a bildirilir.
+
+| Metot | Yol | Yanıt |
+|---|---|---|
+| GET | `/api/crowd/status` | `{rows, symbols, first, last, funding_rows, days, state, last_run, last_error}` |
+| GET | `/api/crowd/funding-radar` | `{settings, rows[{symbol, current_apr_pct, apr_7d_pct, apr_30d_pct, trailing_apr_pct, selected, held}], paper{...}}` |
+| POST | `/api/crowd/collect` | Hemen topla + sanal portföyü güncelle |
+| POST | `/api/crowd/paper/reset` | Sanal portföyü sıfırla |
+| GET | `/api/crowd/analysis` | Her ölçüm için (kendi son 7 gününe göre z > 1 / z < −1) sonraki 24 saat getirisi, fark ve t-değeri; 60 günden az veride uyarı |
+
 ### Ayarlar
 
 | Metot | Yol | Gövde | Yanıt |

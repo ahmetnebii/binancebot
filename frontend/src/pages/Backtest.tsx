@@ -39,6 +39,9 @@ import type {
 } from '../api/types';
 import { AutoOptimize } from '../components/backtest/AutoOptimize';
 import { StrategyLab } from '../components/backtest/StrategyLab';
+import { FundingCarry } from '../components/backtest/FundingCarry';
+import { CrowdData } from '../components/backtest/CrowdData';
+import { Tabs } from '../components/ui/viz';
 import { EquityDrawdownChart } from '../components/analytics/EquityDrawdownChart';
 import { MonthlyHeatmap } from '../components/analytics/MonthlyHeatmap';
 import { RHistogram } from '../components/analytics/RHistogram';
@@ -284,10 +287,10 @@ function ConfigCard({ blocked, onStarted }: { blocked: BacktestJob | undefined; 
           {blocked ? (
             <Button
               variant="secondary"
-              onClick={() => (blocked.kind === 'optimize' || blocked.kind === 'lab' || blocked.kind === 'data' ? window.scrollTo({ top: 0, behavior: 'smooth' }) : navigate(`/backtest/${blocked.id}`))}
+              onClick={() => (blocked.kind && blocked.kind !== 'backtest' ? window.scrollTo({ top: 0, behavior: 'smooth' }) : navigate(`/backtest/${blocked.id}`))}
               icon={<Loader2 className="h-4 w-4 animate-spin" />}
             >
-              {blocked.kind === 'data' ? 'Veriler indiriliyor' : blocked.kind === 'lab' ? 'Laboratuvar çalışıyor' : blocked.kind === 'optimize' ? 'Ayar arama çalışıyor' : 'Bir test çalışıyor — izle'}
+              {blocked.kind === 'carry' ? 'Funding analizi çalışıyor' : blocked.kind === 'data' ? 'Veriler indiriliyor' : blocked.kind === 'lab' ? 'Laboratuvar çalışıyor' : blocked.kind === 'optimize' ? 'Ayar arama çalışıyor' : 'Bir test çalışıyor — izle'}
             </Button>
           ) : (
             <Button variant="primary" size="lg" icon={<Play className="h-4 w-4" />} onClick={run} loading={busy} disabled={noStrategy || unknown.length > 0}>
@@ -1223,7 +1226,7 @@ function JobView({ id, onCalibrationChanged }: { id: string; onCalibrationChange
 export function Backtest({ id }: { id?: string }) {
   const jobsMap = useApp((s) => s.backtestJobs);
   const allJobs = useMemo(() => Object.values(jobsMap).sort((a, b) => b.created_at - a.created_at), [jobsMap]);
-  const jobs = useMemo(() => allJobs.filter((j) => j.kind !== 'optimize' && j.kind !== 'lab' && j.kind !== 'data'), [allJobs]);
+  const jobs = useMemo(() => allJobs.filter((j) => !j.kind || j.kind === 'backtest'), [allJobs]);
   const list = useAsync<BacktestJob[]>(
     () =>
       api.backtestJobs().then((l) => {
@@ -1235,6 +1238,27 @@ export function Backtest({ id }: { id?: string }) {
   const cal = useAsync<Calibration>(() => api.calibration(), []);
   const { confirm, node } = useConfirm();
   const running = allJobs.find(isActive);
+  type TabKey = 'lab' | 'carry' | 'crowd' | 'classic';
+  const [tab, setTabState] = useState<TabKey>(() => {
+    if (id) return 'classic';
+    try {
+      const v = localStorage.getItem('bt_tab') as TabKey | null;
+      return v && ['lab', 'carry', 'crowd', 'classic'].includes(v) ? v : 'lab';
+    } catch {
+      return 'lab';
+    }
+  });
+  const setTab = (v: TabKey) => {
+    setTabState(v);
+    try {
+      localStorage.setItem('bt_tab', v);
+    } catch {
+      /* yok say */
+    }
+  };
+  useEffect(() => {
+    if (id) setTabState('classic');
+  }, [id]);
   const selectedId = id ?? jobs[0]?.id;
 
   const resetCal = async () => {
@@ -1271,26 +1295,40 @@ export function Backtest({ id }: { id?: string }) {
       {node}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-[20px] font-semibold tracking-tight text-fg">Backtest</h1>
+          <h1 className="text-[20px] font-semibold tracking-tight text-fg">Analiz merkezi</h1>
           <p className="mt-0.5 max-w-3xl text-[12.5px] text-muted">
-            Stratejileri geçmiş piyasa verisinde, canlıdaki aynı risk ve emir kurallarıyla test et. Sonuçları kalibrasyon olarak uygulayıp fırsat
-            tahminlerini ölçülmüş verilere dayandırabilirsin.
+            Strateji arama, funding arbitrajı ve kalabalık verisi. Her araç sonuçlarını hiç görmediği dönemde sınar; sahte başarıya karşı korumalıdır.
           </p>
         </div>
       </div>
 
-      <StrategyLab blocked={!!running && running.kind !== 'lab'} onApplied={() => void cal.reload()} />
-      <AutoOptimize blocked={!!running && running.kind !== 'optimize'} onApplied={() => void cal.reload()} />
+      <Tabs
+        value={tab}
+        onChange={setTab}
+        items={[
+          { value: 'lab', label: 'Strateji laboratuvarı', icon: <FlaskConical className="h-4 w-4" /> },
+          { value: 'carry', label: 'Funding arbitrajı', icon: <Scale className="h-4 w-4" /> },
+          { value: 'crowd', label: 'Kalabalık verisi', icon: <Gauge className="h-4 w-4" /> },
+          { value: 'classic', label: 'Gelişmiş', icon: <HistoryIcon className="h-4 w-4" /> },
+        ]}
+      />
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
-        <ConfigCard blocked={running} onStarted={(j) => navigate(`/backtest/${j.id}`)} />
-        <div className="space-y-4">
-          <CalibrationCard cal={cal.data} loading={cal.loading} onReset={resetCal} />
-          <JobsCard jobs={jobs} selectedId={selectedId} loading={list.loading} onDelete={deleteJob} />
-        </div>
-      </div>
-
-      {selectedId ? <JobView key={selectedId} id={selectedId} onCalibrationChanged={(c) => cal.setData(c)} /> : null}
+      {tab === 'lab' && <StrategyLab blocked={!!running && running.kind !== 'lab'} onApplied={() => void cal.reload()} />}
+      {tab === 'carry' && <FundingCarry blocked={!!running && running.kind !== 'carry'} />}
+      {tab === 'crowd' && <CrowdData />}
+      {tab === 'classic' && (
+        <>
+          <AutoOptimize blocked={!!running && running.kind !== 'optimize'} onApplied={() => void cal.reload()} />
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_380px]">
+            <ConfigCard blocked={running} onStarted={(j) => navigate(`/backtest/${j.id}`)} />
+            <div className="space-y-4">
+              <CalibrationCard cal={cal.data} loading={cal.loading} onReset={resetCal} />
+              <JobsCard jobs={jobs} selectedId={selectedId} loading={list.loading} onDelete={deleteJob} />
+            </div>
+          </div>
+          {selectedId ? <JobView key={selectedId} id={selectedId} onCalibrationChanged={(c) => cal.setData(c)} /> : null}
+        </>
+      )}
       {list.error && !jobs.length && (
         <Card className="p-4 text-[12.5px] text-muted">Testler alınamadı: {list.error}</Card>
       )}

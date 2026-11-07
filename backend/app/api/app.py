@@ -15,6 +15,7 @@ from .deps import SafeJSONResponse
 from .routes_auth import router as auth_router
 from .routes_backtest import router as backtest_router
 from .routes_core import router as core_router
+from .routes_crowd import router as crowd_router
 from .routes_settings import router as settings_router
 from .ws import router as ws_router
 
@@ -65,6 +66,7 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
     app.include_router(core_router)
     app.include_router(settings_router)
     app.include_router(backtest_router)
+    app.include_router(crowd_router)
     app.include_router(ws_router)
 
     dist = frontend_dist()

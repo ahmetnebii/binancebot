@@ -5,6 +5,7 @@ import logging
 from typing import Optional
 
 from ..backtest.manager import BacktestManager
+from ..crowd.collector import CrowdCollector
 from ..db import Database
 from ..engine.engine import Engine
 from ..events import EventBus, EventLog
@@ -34,6 +35,7 @@ class AppContext:
         self.synthetic = data_source() == "synthetic"
         self.engine: Optional[Engine] = None
         self.backtests: Optional[BacktestManager] = None
+        self.crowd: Optional[CrowdCollector] = None
         self._market: Optional[MarketData] = None
         self._market_key: Optional[tuple] = None
 
@@ -67,10 +69,14 @@ class AppContext:
         await self.engine.start()
         self.backtests = BacktestManager(self)
         await self.backtests.start()
+        self.crowd = CrowdCollector(self)
+        await self.crowd.start()
         mode = "SENTETİK GELİŞTİRME VERİSİ" if self.synthetic else "Binance verisi"
         await self.events.log("info", "system", f"binancebot başlatıldı ({mode}, ortam: {self.engine.env})")
 
     async def stop(self) -> None:
+        if self.crowd:
+            await self.crowd.stop()
         if self.backtests:
             await self.backtests.stop()
         if self.engine:

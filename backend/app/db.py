@@ -70,6 +70,18 @@ SCHEMA = [
         result TEXT
     )""",
     "CREATE INDEX IF NOT EXISTS idx_backtests_created ON backtests(created_at)",
+    """CREATE TABLE IF NOT EXISTS crowd (
+        symbol TEXT NOT NULL,
+        t INTEGER NOT NULL,
+        oi REAL, oi_value REAL, ls_ratio REAL, top_ls REAL, taker_ratio REAL,
+        PRIMARY KEY (symbol, t)
+    )""",
+    """CREATE TABLE IF NOT EXISTS funding_hist (
+        symbol TEXT NOT NULL,
+        t INTEGER NOT NULL,
+        rate REAL NOT NULL,
+        PRIMARY KEY (symbol, t)
+    )""",
 ]
 
 
@@ -298,3 +310,58 @@ class Database:
     async def session_purge(self, now: int) -> None:
         await self.c.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
         await self.c.commit()
+
+    # --- kalabalık verisi (OI, long/short, taker) ve funding geçmişi -------------
+    async def crowd_upsert(self, rows: list[tuple]) -> None:
+        """rows: (symbol, t, oi, oi_value, ls_ratio, top_ls, taker_ratio); None alanlar mevcut değeri ezmez."""
+        if not rows:
+            return
+        await self.c.executemany(
+            "INSERT INTO crowd(symbol,t,oi,oi_value,ls_ratio,top_ls,taker_ratio) VALUES(?,?,?,?,?,?,?) "
+            "ON CONFLICT(symbol,t) DO UPDATE SET oi=COALESCE(excluded.oi,crowd.oi), oi_value=COALESCE(excluded.oi_value,crowd.oi_value), "
+            "ls_ratio=COALESCE(excluded.ls_ratio,crowd.ls_ratio), top_ls=COALESCE(excluded.top_ls,crowd.top_ls), "
+            "taker_ratio=COALESCE(excluded.taker_ratio,crowd.taker_ratio)",
+            rows,
+        )
+        await self.c.commit()
+
+    async def crowd_rows(self, since: int = 0, symbol: Optional[str] = None) -> list[tuple]:
+        q = "SELECT symbol,t,oi,oi_value,ls_ratio,top_ls,taker_ratio FROM crowd WHERE t>=?"
+        args: list[Any] = [since]
+        if symbol:
+            q += " AND symbol=?"
+            args.append(symbol)
+        q += " ORDER BY symbol, t"
+        async with self.c.execute(q, args) as cur:
+            return list(await cur.fetchall())
+
+    async def crowd_last_t(self, symbol: str) -> Optional[int]:
+        async with self.c.execute("SELECT MAX(t) FROM crowd WHERE symbol=?", (symbol,)) as cur:
+            row = await cur.fetchone()
+        return int(row[0]) if row and row[0] is not None else None
+
+    async def crowd_coverage(self) -> dict:
+        async with self.c.execute("SELECT COUNT(*), COUNT(DISTINCT symbol), MIN(t), MAX(t) FROM crowd") as cur:
+            n, syms, t0, t1 = await cur.fetchone()
+        async with self.c.execute("SELECT COUNT(*), COUNT(DISTINCT symbol), MIN(t), MAX(t) FROM funding_hist") as cur:
+            fn, fsyms, f0, f1 = await cur.fetchone()
+        return {"rows": n or 0, "symbols": syms or 0, "first": t0, "last": t1,
+                "funding_rows": fn or 0, "funding_symbols": fsyms or 0, "funding_first": f0, "funding_last": f1}
+
+    async def funding_upsert(self, rows: list[tuple]) -> None:
+        if not rows:
+            return
+        await self.c.executemany(
+            "INSERT INTO funding_hist(symbol,t,rate) VALUES(?,?,?) ON CONFLICT(symbol,t) DO UPDATE SET rate=excluded.rate", rows,
+        )
+        await self.c.commit()
+
+    async def funding_rows(self, since: int = 0) -> list[tuple]:
+        async with self.c.execute("SELECT symbol,t,rate FROM funding_hist WHERE t>=? ORDER BY symbol,t", (since,)) as cur:
+            return list(await cur.fetchall())
+
+    async def funding_last_t(self, symbol: str) -> Optional[int]:
+        async with self.c.execute("SELECT MAX(t) FROM funding_hist WHERE symbol=?", (symbol,)) as cur:
+            row = await cur.fetchone()
+        return int(row[0]) if row and row[0] is not None else None
+

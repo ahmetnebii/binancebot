@@ -12,6 +12,7 @@ from ..models import SymbolInfo
 from ..util import new_id, now_ms
 from .data import BacktestCancelled, BinanceHistory, SyntheticHistory
 from .report import build_result, short_summary
+from .carry import analyze as carry_analyze
 from .lab import BUDGETS as LAB_BUDGETS, run_lab
 from .optimizer import BUDGETS, describe, optimize, params_from_settings
 from .simulator import STEP, Backtester, BacktestConfig
@@ -761,3 +762,116 @@ class BacktestManager:
             await self.ctx.events.log("error", "data", f"Veri indirme başarısız: {exc}", toast=True, title="Veri hatası")
         finally:
             self._publish(job, force=True)
+
+    # --- Funding arbitrajı analizi -------------------------------------------------
+    async def run_carry(self, body: dict[str, Any]) -> dict:
+        if self._task is not None and not self._task.done():
+            raise BacktestBusy("Çalışan bir iş var; bitmesini bekleyin veya iptal edin")
+        days = int(body.get("days") or 1095)
+        if not 90 <= days <= 1095:
+            raise ValueError("Süre 90 ile 1095 gün arasında olmalı")
+        top_n = int(body.get("top_n") or 30)
+        if not 5 <= top_n <= 60:
+            raise ValueError("Sembol sayısı 5 ile 60 arasında olmalı")
+        spot_fee = float(body.get("spot_fee") if body.get("spot_fee") is not None else 0.001)
+        leverage = float(body.get("leverage") or 3.0)
+        if not (0 <= spot_fee <= 0.01 and 1.0 <= leverage <= 10.0):
+            raise ValueError("Komisyon veya kaldıraç geçersiz")
+        cfg = self._resolve_config({"days": min(days, 365), "top_n": top_n, "strategies": {"s1": True}})
+        cfg.update(days=days, spot_fee=spot_fee, leverage=leverage)
+        job = {
+            "id": new_id("carry"), "kind": "carry", "created_at": now_ms(), "finished_at": None,
+            "status": "queued", "progress": {"phase": "data", "pct": 0.0, "message": "Sırada"},
+            "config": cfg, "error": None, "summary": None,
+        }
+        await self.ctx.db.bt_save(job)
+        self._cancel.clear()
+        self._job = job
+        self._publish(job, force=True)
+        self._task = asyncio.create_task(self._run_carry(job), name=f"carry-{job['id']}")
+        return job
+
+    async def _run_carry(self, job: dict) -> None:
+        cfg = job["config"]
+        job["status"] = "running"
+        await self.ctx.db.bt_save(job)
+        self._publish(job, force=True)
+        try:
+            end = now_ms()
+            end -= end % STEP
+            start = end - cfg["days"] * 86_400_000
+            data = await self._history().load(
+                cfg["symbols"], start, end,
+                progress=lambda f, m: self._set_progress(job, "data", f * 30.0, m),
+                cancelled=self._cancel.is_set, update_tail=False,
+            )
+            loop = asyncio.get_running_loop()
+
+            def prog(f: float, m: str) -> None:
+                loop.call_soon_threadsafe(self._set_progress, job, "analyze", 30.0 + f * 70.0, m)
+
+            res = await asyncio.to_thread(
+                carry_analyze, data, cfg["symbols"], start, end,
+                spot_fee=cfg["spot_fee"], perp_fee=cfg["taker_fee"], slippage=max(0.0002, cfg["slippage_bps"] / 10_000 * 0.7),
+                leverage=cfg["leverage"], progress=prog,
+            )
+            texts = {
+                "recommended": "Funding toplama stratejisi hiç görülmemiş test döneminde de istikrarlı kâr etti (yıllık ≥ %8, düşüş ≤ %5, ayların ≥ %70'i artı).",
+                "weak": "Funding toplama test döneminde artıda ama getiri düşük ya da dalgalı.",
+                "none": "Bu dönemde funding toplama, maliyetler düşüldükten sonra kazandırmadı.",
+            }
+            res["verdict_text"] = texts[res["verdict"]]
+            res["data_source"] = data.source
+            res["warnings"] = [
+                "Spot ile vadeli arasındaki fiyat farkı (baz) dalgalanması modellenmedi; gerçekte giriş/çıkışta küçük ek kâr/zarar yaratabilir.",
+                "Short bacak teminatlıdır: fiyat sert yükselirse teminat eklenmezse likidasyon riski vardır. Düşük kaldıraç (2-3x) kullanın.",
+                "Coinin Binance spot'ta işlem görmesi gerekir; bazı vadeli coinlerin spotu yoktur.",
+                "Parametreler eğitim döneminde (%60) seçildi; raporlanan test sonucu hiç görülmemiş son %40 döneme aittir.",
+            ]
+            if data.source == "synthetic":
+                res["warnings"].insert(0, "Sentetik geliştirme verisi kullanıldı: sonuçlar gerçek piyasayı yansıtmaz.")
+            p = res["portfolio"]
+            job["status"] = "done"
+            job["finished_at"] = now_ms()
+            job["summary"] = {"verdict": res["verdict"], "test_apr_pct": p["test"]["apr_pct"],
+                              "test_max_dd_pct": p["test"]["max_drawdown_pct"], "params": p["params"]}
+            job["progress"] = {"phase": "done", "pct": 100.0, "message": "Tamamlandı"}
+            await self.ctx.db.bt_save(job, res)
+            await self.ctx.events.log(
+                "success" if res["verdict"] != "none" else "warning", "carry",
+                f"Funding arbitrajı analizi: test dönemi yıllık %{p['test']['apr_pct']:.1f}, en büyük düşüş %{p['test']['max_drawdown_pct']:.2f}",
+                toast=True, title="Funding analizi",
+            )
+        except (BacktestCancelled, asyncio.CancelledError):
+            job["status"] = "cancelled"
+            job["finished_at"] = now_ms()
+            await self.ctx.db.bt_save(job)
+        except Exception as exc:
+            log.exception("Funding analizi hatası")
+            job["status"] = "failed"
+            job["finished_at"] = now_ms()
+            job["error"] = str(exc)
+            await self.ctx.db.bt_save(job)
+            await self.ctx.events.log("error", "carry", f"Funding analizi başarısız: {exc}", toast=True, title="Funding analizi")
+        finally:
+            self._publish(job, force=True)
+
+    async def apply_carry(self, job_id: str) -> dict:
+        """Analizde seçilen portföy kurallarını canlı funding radarına ve sanal deneme portföyüne uygular."""
+        job = await self.ctx.db.bt_get(job_id)
+        if job is None or job.get("kind") != "carry" or job.get("status") != "done" or "result" not in job:
+            raise ValueError("Tamamlanmış bir funding analizi bulunamadı")
+        res = job["result"]
+        p = res["portfolio"]["params"]
+        cfg = {**p, "leverage": res["costs"]["leverage"], "spot_fee": res["costs"]["spot_fee"],
+               "perp_fee": res["costs"]["perp_fee"], "slippage": res["costs"]["slippage"],
+               "source_job": job_id, "applied_at": now_ms()}
+        await self.ctx.db.kv_set("carry_settings", cfg, now_ms())
+        job["applied_at"] = now_ms()
+        await self.ctx.db.bt_save(job)
+        self._publish(job, force=True)
+        await self.ctx.events.log(
+            "success", "carry", f"Funding kuralları uygulandı: ilk {p['top_n']} coin, son {p['k']} dönem ortalaması yıllık %{p['enter_apr']:g} üstündeyse",
+            toast=True, title="Funding radarı",
+        )
+        return {"ok": True, "settings": cfg}

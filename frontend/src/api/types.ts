@@ -468,7 +468,7 @@ export interface BacktestResult {
 
 export interface BacktestJob {
   id: string;
-  kind?: 'backtest' | 'optimize' | 'lab' | 'data';
+  kind?: 'backtest' | 'optimize' | 'lab' | 'data' | 'carry';
   created_at: number;
   finished_at: number | null;
   status: BacktestStatus;
@@ -742,4 +742,116 @@ export interface LabJob extends Omit<BacktestJob, 'result' | 'summary' | 'config
   config: { days: number; top_n: number; symbols: string[]; budget: string; candidates: number; grouped?: boolean; mode?: 'single' | 'groups' | 'coins' };
   summary: { verdict: LabResult['verdict']; label: string | null; tested: number } | null;
   result?: LabResult;
+}
+
+// --- Funding arbitrajı ------------------------------------------------------
+export interface CarryMetrics {
+  return_pct: number;
+  apr_pct: number;
+  max_drawdown_pct: number;
+  time_in_pct: number;
+  windows: number;
+  worst_window_pct: number;
+  positive_months_pct: number | null;
+  months: number;
+}
+
+export interface CarryParams {
+  k: number;
+  enter_apr: number;
+  exit_apr: number;
+  top_n: number;
+}
+
+export interface CarryCoin {
+  symbol: string;
+  avg_apr_pct: number;
+  positive_pct: number;
+  recent_apr_pct: number | null;
+  rule: { k: number; enter_apr: number; exit_apr: number };
+  train: CarryMetrics;
+  test: CarryMetrics;
+  always_test: CarryMetrics;
+}
+
+export interface CarryResult {
+  verdict: 'recommended' | 'weak' | 'none';
+  verdict_text: string;
+  period: { start: number; split: number; end: number };
+  costs: { spot_fee: number; perp_fee: number; slippage: number; round_trip_pct: number; leverage: number; capital_efficiency: number };
+  portfolio: {
+    params: CarryParams;
+    train: CarryMetrics;
+    test: CarryMetrics;
+    equity: { time: number; equity: number; drawdown_pct: number }[];
+    monthly_test: { month: string; return_pct: number }[];
+    now: { symbol: string; trailing_apr_pct: number; held: boolean }[];
+  };
+  coins: CarryCoin[];
+  data_source: 'binance' | 'synthetic';
+  warnings: string[];
+}
+
+export interface CarryJob extends Omit<BacktestJob, 'result' | 'summary' | 'config' | 'kind'> {
+  kind: 'carry';
+  applied_at?: number | null;
+  config: { days: number; top_n: number; symbols: string[]; spot_fee: number; leverage: number };
+  summary: { verdict: CarryResult['verdict']; test_apr_pct: number; test_max_dd_pct: number; params: CarryParams } | null;
+  result?: CarryResult;
+}
+
+export interface RadarRow {
+  symbol: string;
+  current_rate: number | null;
+  current_apr_pct: number | null;
+  next_funding_time: number | null;
+  interval_hours: number;
+  apr_7d_pct: number | null;
+  apr_30d_pct: number | null;
+  trailing_apr_pct: number | null;
+  held: boolean;
+  selected: boolean;
+}
+
+export interface FundingRadar {
+  settings: CarryParams & { leverage: number; spot_fee: number; perp_fee: number; slippage: number; source_job?: string; applied_at?: number };
+  rows: RadarRow[];
+  paper: {
+    started_at: number;
+    windows: number;
+    return_pct: number;
+    apr_pct: number | null;
+    holdings: string[];
+    history: { t: number; ret_pct: number; holdings: string[]; funding: Record<string, number> }[];
+    capital: number;
+    equity: number;
+  } | null;
+  updated_at: number | null;
+}
+
+export interface CrowdStatus {
+  rows: number;
+  symbols: number;
+  first: number | null;
+  last: number | null;
+  funding_rows: number;
+  days: number;
+  state: string;
+  last_run: number | null;
+  last_error: string | null;
+}
+
+export interface CrowdStat {
+  n: number;
+  mean_pct: number | null;
+  t: number | null;
+  up_pct: number | null;
+}
+
+export interface CrowdAnalysis {
+  days: number;
+  symbols: number;
+  enough: boolean;
+  note: string;
+  results: { feature: string; name: string; high_desc: string; high: CrowdStat; low: CrowdStat; all: CrowdStat; diff_pct: number | null; diff_t: number | null; reading: string }[];
 }

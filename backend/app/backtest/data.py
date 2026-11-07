@@ -322,6 +322,15 @@ class SyntheticHistory:
             taker = np.clip(0.5 + 0.15 * r / sig15 + 0.04 * rng.standard_normal(n), 0.15, 0.85)
             out.bars[sym] = {"t": t.copy(), "o": opens, "h": hi, "l": lo, "c": closes, "v": qv / closes, "qv": qv, "tbq": qv * taker}
             ft = np.arange(start - start % (8 * 3600_000) + 8 * 3600_000, end, 8 * 3600_000, dtype=np.int64)
-            out.funding[sym] = (ft, np.full(len(ft), float(rng.normal(0.0001, 0.00006))))
+            # gerçeğe benzer funding: coin'e özgü ortalama + kalıcı (AR(1)) sapmalar + ara sıra aşırı dönemler
+            mu = float(rng.normal(0.0001, 0.00008))
+            fr = np.empty(len(ft))
+            x = 0.0
+            for j in range(len(ft)):
+                x = 0.97 * x + float(rng.normal(0.0, 0.00004))
+                fr[j] = mu + x
+            spikes_f = rng.random(len(ft)) < 0.01
+            fr[spikes_f] += rng.normal(0.0, 0.0008, int(spikes_f.sum()))
+            out.funding[sym] = (ft, np.clip(fr, -0.003, 0.003))
             progress((i + 1) / len(symbols), f"{sym} sentetik geçmiş üretildi")
         return out

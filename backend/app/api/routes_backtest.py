@@ -140,6 +140,36 @@ async def data_sync(body: DataSyncIn, request: Request) -> dict:
         raise HTTPException(400, str(exc)) from exc
 
 
+class CarryIn(BaseModel):
+    days: Optional[int] = Field(default=None, ge=90, le=1095)
+    top_n: Optional[int] = Field(default=None, ge=5, le=60)
+    spot_fee: Optional[float] = Field(default=None, ge=0, le=0.01)
+    leverage: Optional[float] = Field(default=None, ge=1, le=10)
+
+
+@router.post("/carry")
+async def carry_run(body: CarryIn, request: Request) -> dict:
+    try:
+        return await manager(request).run_carry(body.model_dump(exclude_none=True))
+    except BacktestBusy as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/carry/jobs")
+async def carry_jobs(request: Request) -> list[dict]:
+    return await manager(request).list("carry")
+
+
+@router.post("/carry/{job_id}/apply")
+async def carry_apply(job_id: str, request: Request) -> dict:
+    try:
+        return await manager(request).apply_carry(job_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @router.get("/jobs/{job_id}")
 async def job(job_id: str, request: Request) -> dict:
     j = await manager(request).get(job_id)
