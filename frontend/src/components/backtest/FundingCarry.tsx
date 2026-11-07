@@ -346,6 +346,7 @@ function AnalysisCard({ blocked }: { blocked: boolean }) {
   const [days, setDays] = useState('1095');
   const [fee, setFee] = useState('0.001');
   const [lev, setLev] = useState('3');
+  const [coins, setCoins] = useState('60');
   const [busy, setBusy] = useState(false);
   const [applying, setApplying] = useState(false);
   const now = useNow(1000);
@@ -372,7 +373,7 @@ function AnalysisCard({ blocked }: { blocked: boolean }) {
   const start = async () => {
     setBusy(true);
     try {
-      const j = await withToast(api.runCarry({ days: Number(days), top_n: 30, spot_fee: Number(fee), leverage: Number(lev) }), 'Analiz başlatılamadı');
+      const j = await withToast(api.runCarry({ days: Number(days), top_n: Number(coins), spot_fee: Number(fee), leverage: Number(lev) }), 'Analiz başlatılamadı');
       useApp.getState().upsertBacktestJob(j as never);
     } catch {
       /* toast */
@@ -426,6 +427,10 @@ function AnalysisCard({ blocked }: { blocked: boolean }) {
             <div>
               <div className="label mb-1">Spot komisyon</div>
               <Segmented value={fee} onChange={setFee} options={[{ value: '0.001', label: '%0,10' }, { value: '0.00075', label: '%0,075 (BNB)' }]} />
+            </div>
+            <div>
+              <div className="label mb-1">Coin sayısı</div>
+              <Segmented value={coins} onChange={setCoins} options={[{ value: '30', label: 'İlk 30' }, { value: '60', label: 'İlk 60' }]} />
             </div>
             <div>
               <div className="label mb-1">Vadeli kaldıraç</div>
