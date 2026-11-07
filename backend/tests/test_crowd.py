@@ -122,3 +122,28 @@ def test_spot_base_mapping():
     assert spot_base("1000PEPEUSDT") == "PEPE" and spot_base("1000000MOGUSDT") == "MOG" and spot_base("BTCUSDT") == "BTC"
     assert spot_base("1INCHUSDT") == "1INCH"  # gerçek adı rakamla başlayan coin bozulmamalı
     assert has_spot("1000PEPEUSDT", {"PEPE"}) and not has_spot("AINUSDT", {"BTC"}) and has_spot("X", None)
+
+
+def test_radar_cross_exchange_scope(tmp_path):
+    async def go():
+        db = Database(tmp_path / "x.sqlite3")
+        await db.open()
+        now = now_ms()
+        w_now = now - now % WINDOW_MS
+        rows = []
+        for i in range(90):
+            t = w_now - (90 - i) * WINDOW_MS
+            rows += [("BTCUSDT", t, 0.0001), ("GATEONLYUSDT", t, 0.001)]
+        await db.funding_upsert(rows)
+        await db.kv_set("spot_bases", {"ts": now, "bases": ["BTC"]})
+        await db.kv_set("spot_bases_multi", {"ts": now, "bases": {"Binance": ["BTC"], "Gate": ["BTC", "GATEONLY"]}})
+        c = FakeCollector(db, [])
+        await db.kv_set("carry_settings", {"k": 9, "enter_apr": 5.0, "exit_apr": 0.0, "top_n": 2})
+        r = {x["symbol"]: x for x in (await c.radar())["rows"]}
+        assert r["GATEONLYUSDT"]["spot"] is False and not r["GATEONLYUSDT"]["selected"]  # yalnızca Binance kapsamı
+        await db.kv_set("carry_settings", {"k": 9, "enter_apr": 5.0, "exit_apr": 0.0, "top_n": 2, "universe": "cross"})
+        r = {x["symbol"]: x for x in (await c.radar())["rows"]}
+        assert r["GATEONLYUSDT"]["spot"] and r["GATEONLYUSDT"]["spot_where"] == ["Gate"] and r["GATEONLYUSDT"]["selected"]
+        assert r["BTCUSDT"]["spot_where"] == ["Binance", "Gate"]
+        await db.close()
+    asyncio.run(go())

@@ -817,10 +817,11 @@ export interface RadarRow {
   held: boolean;
   selected: boolean;
   spot?: boolean;
+  spot_where?: string[];
 }
 
 export interface FundingRadar {
-  settings: CarryParams & { leverage: number; spot_fee: number; perp_fee: number; slippage: number; source_job?: string; applied_at?: number };
+  settings: CarryParams & { leverage: number; spot_fee: number; perp_fee: number; slippage: number; source_job?: string; applied_at?: number; universe?: 'binance' | 'all' | 'cross' };
   rows: RadarRow[];
   paper: {
     started_at: number;

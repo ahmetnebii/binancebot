@@ -62,7 +62,7 @@ function RadarCard() {
         title="Canlı funding radarı"
         subtitle={
           cs
-            ? `Kural: geçmiş ${cs.k} funding döneminin (${fmtNum(cs.k / 3, 0)} gün) ortalaması yıllık %${cs.enter_apr} üstündeki en yüksek ${cs.top_n} coin; ortalama %${cs.exit_apr} altına düşünce çık.${cs.source_job ? ' (Geçmiş analizden uygulandı)' : ' (Varsayılan; aşağıdaki analizi çalıştırıp uygulayabilirsin)'}`
+            ? `Kural: geçmiş ${cs.k} funding döneminin (${fmtNum(cs.k / 3, 0)} gün) ortalaması yıllık %${cs.enter_apr} üstündeki en yüksek ${cs.top_n} coin; ortalama %${cs.exit_apr} altına düşünce çık.${cs.universe === 'cross' ? ' Spot bacağı: Binance, Bybit, OKX veya Gate (çapraz borsa).' : ' Spot bacağı: Binance.'}${cs.source_job ? ' (Geçmiş analizden uygulandı)' : ' (Varsayılan; aşağıdaki analizi çalıştırıp uygulayabilirsin)'}`
             : 'Yükleniyor…'
         }
         icon={<Radar className="h-4 w-4 text-accent" />}
@@ -91,7 +91,12 @@ function RadarCard() {
               <tbody>
                 {rows.map((r) => (
                   <tr key={r.symbol} className={clsx('border-t border-line', r.selected && 'bg-up/[0.05]', r.spot === false && 'opacity-50')}>
-                    <td className="px-2 py-1.5 font-medium text-fg">{coin(r.symbol)}</td>
+                    <td className="px-2 py-1.5 font-medium text-fg">
+                      {coin(r.symbol)}
+                      {cs?.universe === 'cross' && r.spot_where && r.spot_where.length > 0 && (
+                        <div className="text-[10px] font-normal text-subtle">spot: {r.spot_where.join(', ')}</div>
+                      )}
+                    </td>
                     <td className={clsx('num px-2 py-1.5 text-right', pnlClass(r.current_apr_pct ?? 0))}>{pct(r.current_apr_pct)}</td>
                     <td className={clsx('num px-2 py-1.5 text-right', pnlClass(r.apr_7d_pct ?? 0))}>{pct(r.apr_7d_pct)}</td>
                     <td className={clsx('num px-2 py-1.5 text-right', pnlClass(r.apr_30d_pct ?? 0))}>{pct(r.apr_30d_pct)}</td>

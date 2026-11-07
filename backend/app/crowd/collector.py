@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 HOUR = 3_600_000
 DAY = 86_400_000
 TOP_SYMBOLS = 30        # kalabalık verisi (5 uç nokta) toplanan coin sayısı
-FUNDING_SYMBOLS = 250   # funding radarı için izlenen coin sayısı (tek uç nokta, ucuz)
+FUNDING_SYMBOLS = 600   # funding radarı için izlenen coin sayısı (tek uç nokta, ucuz)
 DEFAULT_CARRY = {"k": 21, "enter_apr": 10.0, "exit_apr": 0.0, "top_n": 5, "leverage": 3.0,
                  "spot_fee": 0.001, "perp_fee": 0.0005, "slippage": 0.0002}
 
@@ -92,7 +92,7 @@ class CrowdCollector:
             return []
         m = eng.market
         ranked = sorted(((t.quote_volume, s) for s, t in m.tickers.items() if s in m.symbols and s.endswith("USDT")), reverse=True)
-        return [s for v, s in ranked if v >= 5_000_000][:FUNDING_SYMBOLS] or self.symbols()
+        return [s for v, s in ranked if v >= 1_000_000][:FUNDING_SYMBOLS] or self.symbols()
 
     # --- toplama ---------------------------------------------------------------
     async def collect(self) -> None:
@@ -215,14 +215,24 @@ class CrowdCollector:
             return None
         return float(np.mean(vals)) * PER_YEAR * 100.0
 
-    async def _spot(self):
-        from ..market.spot import spot_bases
-        return await spot_bases(self.ctx.db, bool(getattr(self.ctx, "synthetic", False)))
+    async def _spot_lookup(self, cs: dict):
+        """Sembol → spot bacağının kurulabileceği borsalar. Uygulanan analizin evrenine göre:
+        'cross' ise Binance + Bybit + OKX + Gate, değilse yalnızca Binance."""
+        from ..market.spot import spot_base, spot_bases, spot_bases_multi
+        syn = bool(getattr(self.ctx, "synthetic", False))
+        if cs.get("universe") == "cross":
+            multi = await spot_bases_multi(self.ctx.db, syn)
+            if multi is None:
+                return lambda s: ["?"]
+            return lambda s: [n for n, b in multi.items() if spot_base(s) in b]
+        bases = await spot_bases(self.ctx.db, syn)
+        if bases is None:
+            return lambda s: ["Binance"]
+        return lambda s: ["Binance"] if spot_base(s) in bases else []
 
     async def radar(self) -> dict:
-        from ..market.spot import has_spot
-        bases = await self._spot()
         cs = await self.carry_settings()
+        where_of = await self._spot_lookup(cs)
         now = now_ms()
         sums, raw = await self._window_sums(now - 35 * DAY)
         w_now = now - now % WINDOW_MS
@@ -235,7 +245,8 @@ class CrowdCollector:
         for sym in syms:
             ws = sums.get(sym, {})
             tr = self._trailing(ws, w_now, int(cs["k"]))
-            spot_ok = has_spot(sym, bases)
+            where = where_of(sym)
+            spot_ok = bool(where)
             if tr is not None and spot_ok:
                 trailing_now[sym] = tr
             mi = eng.market.funding(sym) if eng else None
@@ -264,6 +275,7 @@ class CrowdCollector:
                 "trailing_apr_pct": tr,
                 "held": sym in held,
                 "spot": spot_ok,
+                "spot_where": where,
             })
         pick = portfolio_step(trailing_now, held, int(cs["top_n"]), float(cs["enter_apr"]), float(cs["exit_apr"]))
         for r in rows:
@@ -301,9 +313,8 @@ class CrowdCollector:
         eff = 1.0 / (1.0 + 1.0 / float(cs["leverage"]))
         half = (float(cs["spot_fee"]) + float(cs["perp_fee"]) + 2 * float(cs["slippage"]))
         sums, _ = await self._window_sums(paper["last_window"] - (k + 2) * WINDOW_MS)
-        from ..market.spot import has_spot
-        bases = await self._spot()
-        sums = {s: v for s, v in sums.items() if has_spot(s, bases)}  # yalnızca spot bacağı kurulabilen coinler
+        where_of = await self._spot_lookup(cs)
+        sums = {s: v for s, v in sums.items() if where_of(s)}  # yalnızca spot bacağı kurulabilen coinler
         changed = False
         w = paper["last_window"]
         # bir pencere, tamamen bitip ödemeleri kaydedildikten sonra işlenir

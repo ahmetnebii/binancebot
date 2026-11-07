@@ -928,8 +928,11 @@ class BacktestManager:
         p = res["portfolio"]["params"]
         cfg = {**p, "leverage": res["costs"]["leverage"], "spot_fee": res["costs"]["spot_fee"],
                "perp_fee": res["costs"]["perp_fee"], "slippage": res["costs"]["slippage"],
-               "source_job": job_id, "applied_at": now_ms()}
+               "universe": res.get("universe", "binance"), "source_job": job_id, "applied_at": now_ms()}
         await self.ctx.db.kv_set("carry_settings", cfg, now_ms())
+        # evren değiştiyse sanal portföy yeni kuralla baştan başlasın (eski kuralın sonucu karışmasın)
+        if self.ctx.crowd is not None:
+            await self.ctx.crowd.reset_paper()
         job["applied_at"] = now_ms()
         await self.ctx.db.bt_save(job)
         self._publish(job, force=True)
