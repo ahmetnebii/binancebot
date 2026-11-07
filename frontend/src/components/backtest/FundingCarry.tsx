@@ -347,6 +347,7 @@ function AnalysisCard({ blocked }: { blocked: boolean }) {
   const [fee, setFee] = useState('0.001');
   const [lev, setLev] = useState('3');
   const [coins, setCoins] = useState('1000');
+  const [scope, setScope] = useState<'binance' | 'cross'>('binance');
   const [busy, setBusy] = useState(false);
   const [applying, setApplying] = useState(false);
   const now = useNow(1000);
@@ -373,7 +374,7 @@ function AnalysisCard({ blocked }: { blocked: boolean }) {
   const start = async () => {
     setBusy(true);
     try {
-      const j = await withToast(api.runCarry({ days: Number(days), top_n: Number(coins), spot_fee: Number(fee), leverage: Number(lev) }), 'Analiz başlatılamadı');
+      const j = await withToast(api.runCarry({ days: Number(days), top_n: Number(coins), spot_fee: Number(fee), leverage: Number(lev), universe: scope === 'cross' ? 'cross' : coins === '1000' ? 'all' : 'binance' }), 'Analiz başlatılamadı');
       useApp.getState().upsertBacktestJob(j as never);
     } catch {
       /* toast */
@@ -399,7 +400,7 @@ function AnalysisCard({ blocked }: { blocked: boolean }) {
     <Card className="overflow-hidden">
       <CardHeader
         title="Geçmiş analiz: funding toplama ne kazandırırdı?"
-        subtitle="Önbellekteki gerçek funding geçmişiyle. Kural eğitim döneminde seçilir, hiç görülmemiş test döneminde ölçülür. Komisyon ve kayma düşülür."
+        subtitle="Gerçek funding geçmişiyle (gerekirse analiz sırasında kendisi indirir). Kural eğitim döneminde seçilir, hiç görülmemiş test döneminde ölçülür. Komisyon ve kayma düşülür."
         icon={<Coins className="h-4 w-4 text-accent" />}
       />
       <div className="space-y-4 px-4 pb-5 pt-1">
@@ -427,6 +428,13 @@ function AnalysisCard({ blocked }: { blocked: boolean }) {
             <div>
               <div className="label mb-1">Spot komisyon</div>
               <Segmented value={fee} onChange={setFee} options={[{ value: '0.001', label: '%0,10' }, { value: '0.00075', label: '%0,075 (BNB)' }]} />
+            </div>
+            <div>
+              <div className="label mb-1 flex items-center gap-1">
+                Spot nerede
+                <InfoTip>Binance: spot bacağı Binance'te. Herhangi bir borsa: spotu Binance'te olmayan coinler için Bybit / OKX / Gate spot (çapraz borsa; iki borsada bakiye gerekir).</InfoTip>
+              </div>
+              <Segmented value={scope} onChange={setScope} options={[{ value: 'binance', label: 'Binance' }, { value: 'cross', label: 'Herhangi bir borsa' }]} />
             </div>
             <div>
               <div className="label mb-1">Coin sayısı</div>

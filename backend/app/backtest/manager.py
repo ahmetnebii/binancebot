@@ -13,6 +13,7 @@ from ..util import new_id, now_ms
 from .data import BacktestCancelled, BinanceHistory, SyntheticHistory
 from .report import build_result, short_summary
 from .carry import analyze as carry_analyze
+from .full import STEPS as FULL_STEPS, build_report
 from .lab import BUDGETS as LAB_BUDGETS, run_lab
 from .optimizer import BUDGETS, describe, optimize, params_from_settings
 from .simulator import STEP, Backtester, BacktestConfig
@@ -474,8 +475,8 @@ class BacktestManager:
         "none": "Binlerce kural denendi; hiçbiri eğitim, doğrulama ve final sınavının hepsinde yeterli kanıtla kâr etmedi.",
     }
 
-    async def run_lab_job(self, body: dict[str, Any]) -> dict:
-        if self._task is not None and not self._task.done():
+    async def run_lab_job(self, body: dict[str, Any], start: bool = True) -> dict:
+        if start and self._task is not None and not self._task.done():
             raise BacktestBusy("Zaten çalışan bir test, optimizasyon veya laboratuvar araması var; bitmesini bekleyin veya iptal edin")
         days = int(body.get("days") or 365)
         if not 90 <= days <= 1095:
@@ -496,7 +497,9 @@ class BacktestManager:
         if mode == "coins" and top_n > 30:
             raise ValueError("Coin bazlı aramada en fazla 30 coin seçilebilir")
         grouped = mode == "groups"
-        cfg = self._resolve_config({"days": min(days, 365), "top_n": top_n, "strategies": {"s1": True}})
+        cfg = self._resolve_config({"days": min(days, 365), "top_n": max(5, top_n), "strategies": {"s1": True}})
+        cfg["symbols"] = cfg["symbols"][:top_n]
+        cfg["top_n"] = top_n
         cfg["days"] = days
         cfg["budget"] = budget
         cfg["candidates"] = LAB_BUDGETS[budget]
@@ -508,6 +511,8 @@ class BacktestManager:
             "config": cfg, "error": None, "summary": None,
         }
         await self.ctx.db.bt_save(job)
+        if not start:
+            return job
         self._cancel.clear()
         self._job = job
         self._publish(job, force=True)
@@ -703,8 +708,8 @@ class BacktestManager:
             st["running_job"] = self._job["id"]
         return st
 
-    async def run_data_sync(self, body: dict[str, Any]) -> dict:
-        if self._task is not None and not self._task.done():
+    async def run_data_sync(self, body: dict[str, Any], start: bool = True) -> dict:
+        if start and self._task is not None and not self._task.done():
             raise BacktestBusy("Çalışan bir iş var; bitmesini bekleyin veya iptal edin")
         days = int(body.get("days") or 1095)
         if not 30 <= days <= 1095:
@@ -712,7 +717,8 @@ class BacktestManager:
         top_n = int(body.get("top_n") or 30)
         if not 3 <= top_n <= 60:
             raise ValueError("Sembol sayısı 3 ile 60 arasında olmalı")
-        cfg = self._resolve_config({"days": min(days, 365), "top_n": top_n, "strategies": {"s1": True}})
+        cfg = self._resolve_config({"days": min(days, 365), "top_n": max(5, top_n), "strategies": {"s1": True}})
+        cfg["symbols"] = cfg["symbols"][:top_n]
         cfg["days"] = days
         job = {
             "id": new_id("data"), "kind": "data", "created_at": now_ms(), "finished_at": None,
@@ -720,6 +726,8 @@ class BacktestManager:
             "config": cfg, "error": None, "summary": None,
         }
         await self.ctx.db.bt_save(job)
+        if not start:
+            return job
         self._cancel.clear()
         self._job = job
         self._publish(job, force=True)
@@ -764,8 +772,8 @@ class BacktestManager:
             self._publish(job, force=True)
 
     # --- Funding arbitrajı analizi -------------------------------------------------
-    async def run_carry(self, body: dict[str, Any]) -> dict:
-        if self._task is not None and not self._task.done():
+    async def run_carry(self, body: dict[str, Any], start: bool = True) -> dict:
+        if start and self._task is not None and not self._task.done():
             raise BacktestBusy("Çalışan bir iş var; bitmesini bekleyin veya iptal edin")
         days = int(body.get("days") or 1095)
         if not 90 <= days <= 1095:
@@ -777,21 +785,39 @@ class BacktestManager:
         leverage = float(body.get("leverage") or 3.0)
         if not (0 <= spot_fee <= 0.01 and 1.0 <= leverage <= 10.0):
             raise ValueError("Komisyon veya kaldıraç geçersiz")
+        universe = str(body.get("universe") or "binance")
+        if universe not in ("binance", "all", "cross"):
+            raise ValueError("Evren binance, all veya cross olmalı")
         cfg = self._resolve_config({"days": min(days, 365), "top_n": min(top_n, 80), "strategies": {"s1": True}})
-        if top_n > 80:  # "tüm coinler": likidite filtresinden geçen bütün vadeli coinler
-            cfg["symbols"] = self._resolve_symbols(top_n, None)
-        cfg.update(days=days, spot_fee=spot_fee, leverage=leverage, top_n=top_n)
+        if universe in ("all", "cross") or top_n > 80:
+            # tüm coinler: hacim filtresi olmadan Binance'teki bütün USDT sürekli vadeli kontratlar
+            cfg["symbols"] = self._all_perps()
+            top_n = len(cfg["symbols"])
+            if universe == "binance":
+                universe = "all"
+        cfg.update(days=days, spot_fee=spot_fee, leverage=leverage, top_n=top_n, universe=universe)
         job = {
             "id": new_id("carry"), "kind": "carry", "created_at": now_ms(), "finished_at": None,
             "status": "queued", "progress": {"phase": "data", "pct": 0.0, "message": "Sırada"},
             "config": cfg, "error": None, "summary": None,
         }
         await self.ctx.db.bt_save(job)
+        if not start:
+            return job
         self._cancel.clear()
         self._job = job
         self._publish(job, force=True)
         self._task = asyncio.create_task(self._run_carry(job), name=f"carry-{job['id']}")
         return job
+
+    def _all_perps(self) -> list[str]:
+        eng = self.ctx.engine
+        if eng is None:
+            return []
+        m = eng.market
+        syms = [s for s, i in m.symbols.items() if i.quote == "USDT" and i.contract_type == "PERPETUAL" and i.status == "TRADING"]
+        vol = {s: (m.tickers[s].quote_volume if s in m.tickers else 0.0) for s in syms}
+        return sorted(syms, key=lambda s: -vol[s])
 
     async def _run_carry(self, job: dict) -> None:
         cfg = job["config"]
@@ -802,10 +828,24 @@ class BacktestManager:
             end = now_ms()
             end -= end % STEP
             start = end - cfg["days"] * 86_400_000
-            from ..market.spot import has_spot, spot_bases
-            self._set_progress(job, "data", 1.0, "Binance Spot'ta işlem gören coinler kontrol ediliyor")
-            bases = await spot_bases(self.ctx.db, self.ctx.synthetic)
-            symbols = [s for s in cfg["symbols"] if has_spot(s, bases)]
+            from ..market.spot import has_spot, spot_bases, spot_bases_multi, spot_base
+            cross = cfg.get("universe") == "cross"
+            self._set_progress(job, "data", 1.0, "Spotta işlem gören coinler kontrol ediliyor"
+                               + (" (Binance, Bybit, OKX, Gate)" if cross else " (Binance)"))
+            where: dict[str, list[str]] = {}
+            if cross:
+                multi = await spot_bases_multi(self.ctx.db, self.ctx.synthetic)
+                if multi is None:
+                    symbols = list(cfg["symbols"])
+                else:
+                    for s in cfg["symbols"]:
+                        ex = [name for name, b in multi.items() if spot_base(s) in b]
+                        if ex:
+                            where[s] = ex
+                    symbols = [s for s in cfg["symbols"] if s in where]
+            else:
+                bases = await spot_bases(self.ctx.db, self.ctx.synthetic)
+                symbols = [s for s in cfg["symbols"] if has_spot(s, bases)]
             no_spot = [s for s in cfg["symbols"] if s not in symbols]
             if len(symbols) < 3:
                 raise RuntimeError("Spotta işlem gören yeterli coin bulunamadı")
@@ -843,9 +883,16 @@ class BacktestManager:
             if data.source == "synthetic":
                 res["warnings"].insert(0, "Sentetik geliştirme verisi kullanıldı: sonuçlar gerçek piyasayı yansıtmaz.")
             res["excluded_no_spot"] = no_spot
+            res["universe"] = cfg.get("universe", "binance")
+            res["coins_total"] = len(cfg["symbols"])
+            res["coins_used"] = len(symbols)
+            if cross:
+                res["spot_where"] = where
+                res["warnings"].insert(0, "Çapraz borsa: spot bacağı Binance'te olmayan coinler için Bybit / OKX / Gate spot kullanılır. "
+                                       "İki borsada bakiye ve teminat yönetimi gerekir; borsalar arası transfer süresi ve ücreti modellenmedi.")
             if no_spot:
-                res["warnings"].insert(0, f"Binance Spot'ta olmayan {len(no_spot)} coin analizden çıkarıldı (spot bacağı kurulamaz): "
-                                       + ", ".join(x.replace("USDT", "") for x in no_spot))
+                res["warnings"].insert(0, f"Spot bacağı kurulamayan {len(no_spot)} coin analizden çıkarıldı: "
+                                       + ", ".join(x.replace("USDT", "") for x in no_spot[:60]) + (" …" if len(no_spot) > 60 else ""))
             p = res["portfolio"]
             job["status"] = "done"
             job["finished_at"] = now_ms()
@@ -891,3 +938,107 @@ class BacktestManager:
             toast=True, title="Funding radarı",
         )
         return {"ok": True, "settings": cfg}
+
+    # --- Tek tuşla tam analiz ---------------------------------------------------------
+    async def run_full(self, body: dict[str, Any]) -> dict:
+        if self._task is not None and not self._task.done():
+            raise BacktestBusy("Çalışan bir iş var; bitmesini bekleyin veya iptal edin")
+        steps = [{"key": k, "name": n, "weight": w, "job_id": None, "status": "pending", "summary": None}
+                 for k, n, w, _, _ in FULL_STEPS]
+        job = {
+            "id": new_id("full"), "kind": "full", "created_at": now_ms(), "finished_at": None,
+            "status": "queued", "progress": {"phase": "data", "pct": 0.0, "message": "Sırada"},
+            "config": {"steps": steps}, "error": None, "summary": None,
+        }
+        await self.ctx.db.bt_save(job)
+        self._cancel.clear()
+        self._job = job
+        self._publish(job, force=True)
+        self._task = asyncio.create_task(self._run_full(job), name=f"full-{job['id']}")
+        return job
+
+    async def _run_full(self, job: dict) -> None:
+        steps = job["config"]["steps"]
+        job["status"] = "running"
+        await self.ctx.db.bt_save(job)
+        self._publish(job, force=True)
+        results: dict[str, Optional[dict]] = {}
+        crowd_res: Optional[dict] = None
+        total_w = sum(st["weight"] for st in steps)
+        done_w = 0.0
+        try:
+            for i, (key, name, weight, kind, body) in enumerate(FULL_STEPS):
+                if self._cancel.is_set():
+                    raise BacktestCancelled()
+                st = steps[i]
+                st["status"] = "running"
+                base = done_w / total_w * 100.0
+                span = weight / total_w * 100.0
+                self._set_progress(job, kind, base, f"[{i + 1}/{len(steps)}] {name}")
+                self._publish(job, force=True)
+                try:
+                    if kind == "crowd":
+                        from ..crowd.analysis import analyze as crowd_analyze
+                        since = now_ms() - 400 * 86_400_000
+                        crowd_res = await asyncio.to_thread(
+                            crowd_analyze, await self.ctx.db.crowd_rows(since), await self.ctx.db.funding_rows(since),
+                        )
+                        st["status"] = "done"
+                        st["summary"] = {"days": crowd_res.get("days"), "enough": crowd_res.get("enough")}
+                    else:
+                        maker = {"data": self.run_data_sync, "lab": self.run_lab_job, "carry": self.run_carry}[kind]
+                        runner = {"data": self._run_data_sync, "lab": self._run_lab, "carry": self._run_carry}[kind]
+                        sub = await maker(dict(body), start=False)
+                        st["job_id"] = sub["id"]
+                        t = asyncio.create_task(runner(sub))
+                        while not t.done():
+                            await asyncio.wait({t}, timeout=1.5)
+                            pr = sub.get("progress") or {}
+                            self._set_progress(job, kind, base + span * float(pr.get("pct", 0.0)) / 100.0,
+                                               f"[{i + 1}/{len(steps)}] {name} — {pr.get('message', '')}")
+                        saved = await self.ctx.db.bt_get(sub["id"])
+                        st["status"] = (saved or sub).get("status", "failed")
+                        st["summary"] = (saved or sub).get("summary")
+                        st["error"] = (saved or sub).get("error")
+                        results[key] = (saved or {}).get("result") if st["status"] == "done" else None
+                        if st["status"] == "cancelled":
+                            raise BacktestCancelled()
+                except BacktestCancelled:
+                    st["status"] = "cancelled"
+                    raise
+                except Exception as exc:  # bir adım bozulursa diğerleriyle devam et
+                    log.exception("Tam analiz adımı başarısız: %s", key)
+                    st["status"] = "failed"
+                    st["error"] = str(exc)
+                done_w += weight
+                await self.ctx.db.bt_save(job)
+                self._publish(job, force=True)
+            report = build_report(steps, results, crowd_res)
+            job["status"] = "done"
+            job["finished_at"] = now_ms()
+            best = report["best"]
+            job["summary"] = {"best_title": best["title"] if best else None,
+                              "best_apr_pct": best["oos_apr_pct"] if best else None,
+                              "candidates": len(report["candidates"])}
+            job["progress"] = {"phase": "done", "pct": 100.0, "message": "Tamamlandı"}
+            await self.ctx.db.bt_save(job, report)
+            await self.ctx.events.log(
+                "success" if best else "warning", "full", f"Tam analiz tamamlandı: {report['summary']}",
+                toast=True, title="Tam analiz",
+            )
+            try:
+                self.ctx.notifier.notify(f"📊 <b>Tam analiz tamamlandı</b>\n{report['summary']}", kind="system")
+            except Exception:
+                pass
+        except (BacktestCancelled, asyncio.CancelledError):
+            job["status"] = "cancelled"
+            job["finished_at"] = now_ms()
+            await self.ctx.db.bt_save(job)
+        except Exception as exc:
+            log.exception("Tam analiz hatası")
+            job["status"] = "failed"
+            job["finished_at"] = now_ms()
+            job["error"] = str(exc)
+            await self.ctx.db.bt_save(job)
+        finally:
+            self._publish(job, force=True)

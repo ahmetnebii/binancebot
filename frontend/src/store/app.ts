@@ -127,7 +127,7 @@ export const useApp = create<AppState>((set, get) => ({
     // Yalnızca normal backtest işlerini yeniler; optimize/laboratuvar işleri korunur
     const map: Record<string, BacktestJob> = {};
     for (const j of Object.values(get().backtestJobs)) {
-      if (j.kind === 'optimize' || j.kind === 'lab' || j.kind === 'data' || j.kind === 'carry') map[j.id] = j;
+      if (j.kind === 'optimize' || j.kind === 'lab' || j.kind === 'data' || j.kind === 'carry' || j.kind === 'full') map[j.id] = j;
     }
     for (const j of list) {
       const { result: _drop, ...light } = j;

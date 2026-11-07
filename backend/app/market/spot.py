@@ -55,3 +55,63 @@ async def spot_bases(db: "Database", synthetic: bool = False, max_age_ms: int = 
 
 def has_spot(futures_symbol: str, bases: Optional[set[str]]) -> bool:
     return True if bases is None else spot_base(futures_symbol) in bases
+
+
+# --- diğer borsaların spot listeleri (çapraz borsa funding arbitrajı) ----------------------
+async def _bybit(session: aiohttp.ClientSession) -> set[str]:
+    out: set[str] = set()
+    cursor = ""
+    for _ in range(10):
+        params = {"category": "spot", "limit": "1000"}
+        if cursor:
+            params["cursor"] = cursor
+        async with session.get("https://api.bybit.com/v5/market/instruments-info", params=params) as r:
+            r.raise_for_status()
+            data = await r.json(content_type=None)
+        res = (data or {}).get("result") or {}
+        for it in res.get("list") or []:
+            if it.get("quoteCoin") == "USDT" and it.get("status") == "Trading":
+                out.add(it.get("baseCoin", ""))
+        cursor = res.get("nextPageCursor") or ""
+        if not cursor:
+            break
+    return out
+
+
+async def _okx(session: aiohttp.ClientSession) -> set[str]:
+    async with session.get("https://www.okx.com/api/v5/public/instruments", params={"instType": "SPOT"}) as r:
+        r.raise_for_status()
+        data = await r.json(content_type=None)
+    return {it["baseCcy"] for it in (data or {}).get("data") or [] if it.get("quoteCcy") == "USDT" and it.get("state") == "live"}
+
+
+async def _gate(session: aiohttp.ClientSession) -> set[str]:
+    async with session.get("https://api.gateio.ws/api/v4/spot/currency_pairs") as r:
+        r.raise_for_status()
+        data = await r.json(content_type=None)
+    return {it["base"] for it in data or [] if it.get("quote") == "USDT" and it.get("trade_status") == "tradable"}
+
+
+async def spot_bases_multi(db: "Database", synthetic: bool = False, max_age_ms: int = 86_400_000) -> Optional[dict[str, set[str]]]:
+    """Borsa → spotta USDT çiftiyle işlem gören coinler (Binance, Bybit, OKX, Gate). Sentetik modda None."""
+    if synthetic:
+        return None
+    cached = await db.kv_get("spot_bases_multi", None)
+    if cached and now_ms() - int(cached.get("ts", 0)) < max_age_ms:
+        return {k: set(v) for k, v in cached["bases"].items()}
+    out: dict[str, set[str]] = {}
+    binance = await spot_bases(db, synthetic)
+    if binance:
+        out["Binance"] = binance
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25)) as s:
+        for name, fn in (("Bybit", _bybit), ("OKX", _okx), ("Gate", _gate)):
+            try:
+                b = await fn(s)
+                if b:
+                    out[name] = b
+            except Exception as exc:  # bir borsaya ulaşılamazsa diğerleriyle devam
+                log.warning("%s spot listesi alınamadı: %s", name, exc)
+    if out:
+        await db.kv_set("spot_bases_multi", {"ts": now_ms(), "bases": {k: sorted(v) for k, v in out.items()}}, now_ms())
+        return out
+    return {k: set(v) for k, v in cached["bases"].items()} if cached else None

@@ -475,6 +475,10 @@ Geçmiş 3 yıla kadar çıkabilir; ilk indirme ~20–30 dk sürer, sonra `data/
 
 Kural canlıda S6 olarak çalışır (`strategies/lab_rules.py`); hızlı tarama, portföy simülasyonu ve canlı tarama aynı sinyal kodunu kullanır. S6 varsayılan EV eşiğinden ve çıkış profilinden muaftır (kendi doğrulanmış çıkışını kullanır).
 
+### Tek tuşla tam analiz (full)
+
+`POST /api/backtest/full` tek iş olarak sırasıyla çalıştırır (her adım kendi sekmesinde de normal bir iş olarak görünür): (1) 3 yıllık mum verisi (ilk 30 coin), (2) strateji laboratuvarı coin grupları (derin), (3) strateji laboratuvarı coin bazlı (ilk 10, normal), (4-6) funding arbitrajı: Binance spot likit coinler / Binance spot tüm coinler / çapraz borsa (Bybit, OKX, Gate spot), (7) kalabalık analizi. Bir adım hata verirse diğerleri devam eder. Sonuç: `{summary, best, trial, candidates[{kind, title, label, details, verdict, forward_ok, oos_apr_pct, oos_return_pct, oos_days, oos_max_dd_pct, job_id}], crowd, warnings}`. Adaylar önce karara (önerilen > zayıf > denemeye değer), sonra aramada hiç kullanılmamış dönemdeki yıllıklandırılmış getiriye göre sıralanır. `GET /api/backtest/full/jobs` listeler. Funding evrenleri: `universe: binance | all | cross` (`all`: hacim filtresi olmadan bütün USDT sürekli vadeli kontratlar; yalnızca funding geçmişi indirilir).
+
 ### Funding arbitrajı (carry)
 
 Delta-nötr strateji: spotta al + vadelide aynı adette short → fiyat riski yok, funding toplanır. Analiz önbellekteki funding geçmişini kullanır; 8 saatlik pencereler (4 saatlik coinlerde iki ödeme toplanır). Kural: son `k` pencere ortalaması yıllık `enter_apr` üstündeyse gir, `exit_apr` altına inince çık; portföyde ortalaması en yüksek `top_n` coin (tutulan coin ilk 2N'de ve eşik üstünde kaldıkça bırakılmaz). Parametreler eğitimde (%60) seçilir, sonuç test döneminde (%40) raporlanır. Maliyet: giriş + çıkışta spot ve vadeli komisyon + iki bacak kayma; sermaye verimi 1/(1+1/kaldıraç). Karar: test yıllık ≥ %8, düşüş ≤ %5, ayların ≥ %70'i artı → `recommended`; yıllık > %3 → `weak`.

@@ -41,6 +41,7 @@ import { AutoOptimize } from '../components/backtest/AutoOptimize';
 import { StrategyLab } from '../components/backtest/StrategyLab';
 import { FundingCarry } from '../components/backtest/FundingCarry';
 import { CrowdData } from '../components/backtest/CrowdData';
+import { FullAnalysis } from '../components/backtest/FullAnalysis';
 import { Tabs } from '../components/ui/viz';
 import { EquityDrawdownChart } from '../components/analytics/EquityDrawdownChart';
 import { MonthlyHeatmap } from '../components/analytics/MonthlyHeatmap';
@@ -290,7 +291,7 @@ function ConfigCard({ blocked, onStarted }: { blocked: BacktestJob | undefined; 
               onClick={() => (blocked.kind && blocked.kind !== 'backtest' ? window.scrollTo({ top: 0, behavior: 'smooth' }) : navigate(`/backtest/${blocked.id}`))}
               icon={<Loader2 className="h-4 w-4 animate-spin" />}
             >
-              {blocked.kind === 'carry' ? 'Funding analizi çalışıyor' : blocked.kind === 'data' ? 'Veriler indiriliyor' : blocked.kind === 'lab' ? 'Laboratuvar çalışıyor' : blocked.kind === 'optimize' ? 'Ayar arama çalışıyor' : 'Bir test çalışıyor — izle'}
+              {blocked.kind === 'full' ? 'Tam analiz çalışıyor' : blocked.kind === 'carry' ? 'Funding analizi çalışıyor' : blocked.kind === 'data' ? 'Veriler indiriliyor' : blocked.kind === 'lab' ? 'Laboratuvar çalışıyor' : blocked.kind === 'optimize' ? 'Ayar arama çalışıyor' : 'Bir test çalışıyor — izle'}
             </Button>
           ) : (
             <Button variant="primary" size="lg" icon={<Play className="h-4 w-4" />} onClick={run} loading={busy} disabled={noStrategy || unknown.length > 0}>
@@ -1238,14 +1239,14 @@ export function Backtest({ id }: { id?: string }) {
   const cal = useAsync<Calibration>(() => api.calibration(), []);
   const { confirm, node } = useConfirm();
   const running = allJobs.find(isActive);
-  type TabKey = 'lab' | 'carry' | 'crowd' | 'classic';
+  type TabKey = 'full' | 'lab' | 'carry' | 'crowd' | 'classic';
   const [tab, setTabState] = useState<TabKey>(() => {
     if (id) return 'classic';
     try {
       const v = localStorage.getItem('bt_tab') as TabKey | null;
-      return v && ['lab', 'carry', 'crowd', 'classic'].includes(v) ? v : 'lab';
+      return v && ['full', 'lab', 'carry', 'crowd', 'classic'].includes(v) ? v : 'full';
     } catch {
-      return 'lab';
+      return 'full';
     }
   });
   const setTab = (v: TabKey) => {
@@ -1306,6 +1307,7 @@ export function Backtest({ id }: { id?: string }) {
         value={tab}
         onChange={setTab}
         items={[
+          { value: 'full', label: 'Tam analiz', icon: <Sparkles className="h-4 w-4" /> },
           { value: 'lab', label: 'Strateji laboratuvarı', icon: <FlaskConical className="h-4 w-4" /> },
           { value: 'carry', label: 'Funding arbitrajı', icon: <Scale className="h-4 w-4" /> },
           { value: 'crowd', label: 'Kalabalık verisi', icon: <Gauge className="h-4 w-4" /> },
@@ -1313,6 +1315,7 @@ export function Backtest({ id }: { id?: string }) {
         ]}
       />
 
+      {tab === 'full' && <FullAnalysis blocked={!!running && running.kind !== 'full'} />}
       {tab === 'lab' && <StrategyLab blocked={!!running && running.kind !== 'lab'} onApplied={() => void cal.reload()} />}
       {tab === 'carry' && <FundingCarry blocked={!!running && running.kind !== 'carry'} />}
       {tab === 'crowd' && <CrowdData />}

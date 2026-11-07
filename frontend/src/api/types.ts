@@ -468,7 +468,7 @@ export interface BacktestResult {
 
 export interface BacktestJob {
   id: string;
-  kind?: 'backtest' | 'optimize' | 'lab' | 'data' | 'carry';
+  kind?: 'backtest' | 'optimize' | 'lab' | 'data' | 'carry' | 'full';
   created_at: number;
   finished_at: number | null;
   status: BacktestStatus;
@@ -789,6 +789,10 @@ export interface CarryResult {
   };
   coins: CarryCoin[];
   excluded_no_spot?: string[];
+  universe?: 'binance' | 'all' | 'cross';
+  coins_total?: number;
+  coins_used?: number;
+  spot_where?: Record<string, string[]>;
   data_source: 'binance' | 'synthetic';
   warnings: string[];
 }
@@ -856,4 +860,50 @@ export interface CrowdAnalysis {
   enough: boolean;
   note: string;
   results: { feature: string; name: string; high_desc: string; high: CrowdStat; low: CrowdStat; all: CrowdStat; diff_pct: number | null; diff_t: number | null; reading: string }[];
+}
+
+// --- Tek tuşla tam analiz -----------------------------------------------------
+export interface FullCandidate {
+  kind: 'lab' | 'carry';
+  step: string;
+  job_id: string;
+  title: string;
+  label: string;
+  details: string[];
+  verdict: 'recommended' | 'weak' | 'none';
+  forward_ok: boolean;
+  oos_return_pct: number;
+  oos_days: number;
+  oos_apr_pct: number;
+  oos_max_dd_pct: number | null;
+  oos_trades: number | null;
+  oos_expectancy_r: number | null;
+  full_return_pct: number | null;
+  how: string;
+}
+
+export interface FullReport {
+  summary: string;
+  best: FullCandidate | null;
+  trial: FullCandidate | null;
+  candidates: FullCandidate[];
+  crowd: { days: number | null; enough: boolean | null; note: string | null; strong: { name: string; reading: string; diff_t: number }[] };
+  warnings: string[];
+}
+
+export interface FullStep {
+  key: string;
+  name: string;
+  weight: number;
+  job_id: string | null;
+  status: 'pending' | 'running' | 'done' | 'failed' | 'cancelled' | 'queued';
+  summary: Record<string, unknown> | null;
+  error?: string | null;
+}
+
+export interface FullJob extends Omit<BacktestJob, 'result' | 'summary' | 'config' | 'kind'> {
+  kind: 'full';
+  config: { steps: FullStep[] };
+  summary: { best_title: string | null; best_apr_pct: number | null; candidates: number } | null;
+  result?: FullReport;
 }

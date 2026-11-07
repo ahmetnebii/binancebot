@@ -145,6 +145,20 @@ class CarryIn(BaseModel):
     top_n: Optional[int] = Field(default=None, ge=5, le=1000)
     spot_fee: Optional[float] = Field(default=None, ge=0, le=0.01)
     leverage: Optional[float] = Field(default=None, ge=1, le=10)
+    universe: Optional[str] = Field(default=None, pattern="^(binance|all|cross)$")
+
+
+@router.post("/full")
+async def full_run(request: Request) -> dict:
+    try:
+        return await manager(request).run_full({})
+    except BacktestBusy as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/full/jobs")
+async def full_jobs(request: Request) -> list[dict]:
+    return await manager(request).list("full")
 
 
 @router.post("/carry")
