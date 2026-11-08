@@ -2,7 +2,12 @@
 
 Özellikler her gün coinler arasında sıralanıp [-0.5, 0.5] aralığına çevrilir (sıra normalizasyonu):
 model "bu coin bugün diğerlerine göre nerede?" sorusunu öğrenir; piyasanın genel yönü çıkarılır.
-Hedef: sonraki H günün getirisi, o günkü coin ortalamasından arındırılmış (piyasa-nötr).
+
+İşlem evreni (tradable) bilerek dar tutulur — küçük, sığ ve yeni coinlerdeki ani pump/dump'lar
+hem modelin öğrendiğini bozar hem de testte varsayılandan çok daha yüksek kayma demektir:
+- son 30 günün ortalama günlük hacmi ≥ min_qv (varsayılan 20M USDT)
+- en az 90 günlük geçmiş (yeni listelenen coin yok)
+- son 1 günde |getiri| ≤ %25 ve son 3 günde ≤ %50 (aşırı hareket eden coine girilmez)
 """
 from __future__ import annotations
 
@@ -28,18 +33,24 @@ FEATURES = [
     ("range7", "7 günlük fiyat aralığı"),
     ("volz", "Hacim artışı (30 güne göre)"),
     ("funding", "Funding (son 3 gün)"),
+    ("beta60", "Piyasaya duyarlılık (beta, 60 gün)"),
+    ("max30", "30 günün en büyük günlük sıçraması"),
+    ("qvtrend", "Hacim trendi (7 gün / 30 gün)"),
 ]
 F = len(FEATURES)
-MIN_HISTORY = 60
+MIN_HISTORY = 90
+MAX_ABS_R1 = 0.25
+MAX_ABS_R3 = 0.50
 
 
 @dataclass
 class Panel:
     t: np.ndarray            # gün başlangıçları (ms)
     syms: list[str]
-    X: np.ndarray            # [gün, coin, özellik] sıra-normalize, NaN = yok
+    X: np.ndarray            # [gün, coin, özellik] sıra-normalize (eksik = 0, nötr)
     close: np.ndarray        # [gün, coin]
     tradable: np.ndarray     # [gün, coin] bool
+    vol: np.ndarray          # [gün, coin] 14 günlük günlük oynaklık (ham; pozisyon boyu ve hedef için)
 
 
 def _grid(daily: dict[str, dict[str, np.ndarray]]) -> np.ndarray:
@@ -61,8 +72,23 @@ def _rank_norm(M: np.ndarray) -> np.ndarray:
     return out
 
 
+def _rolling_mean(M: np.ndarray, n: int) -> np.ndarray:
+    """[gün, coin] için son n günün (bugün dahil) NaN'siz ortalaması; yeterli gözlem yoksa NaN."""
+    x = np.where(np.isnan(M), 0.0, M)
+    c = np.where(np.isnan(M), 0.0, 1.0)
+    cs = np.vstack([np.zeros((1, M.shape[1])), np.cumsum(x, axis=0)])
+    cc = np.vstack([np.zeros((1, M.shape[1])), np.cumsum(c, axis=0)])
+    out = np.full(M.shape, np.nan)
+    if M.shape[0] >= n:
+        s = cs[n:] - cs[:-n]
+        k = cc[n:] - cc[:-n]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            out[n - 1:] = np.where(k >= max(3, n // 2), s / np.maximum(k, 1), np.nan)
+    return out
+
+
 def build_panel(daily: dict[str, dict[str, np.ndarray]], funding: Optional[dict[str, tuple[np.ndarray, np.ndarray]]] = None,
-                min_qv: float = 2_000_000.0) -> Panel:
+                min_qv: float = 20_000_000.0) -> Panel:
     t = _grid(daily)
     syms = sorted(daily)
     D, S = len(t), len(syms)
@@ -80,30 +106,43 @@ def build_panel(daily: dict[str, dict[str, np.ndarray]], funding: Optional[dict[
             raw[n:, :, k] = C[n:] / C[:-n] - 1.0
         lr = np.full((D, S), np.nan)
         lr[1:] = np.log(C[1:] / C[:-1])
+        # oynaklık (vektörel): E[x²] − E[x]²
+        m1 = _rolling_mean(lr, 14)
+        m2 = _rolling_mean(lr * lr, 14)
+        vol = np.sqrt(np.maximum(m2 - m1 * m1, 0.0))
+        raw[:, :, 5] = vol
         lqv = np.log1p(np.where(QV > 0, QV, np.nan))
+        # piyasa getirisi (eşit ağırlık) ve beta
+        cnt = (~np.isnan(lr)).sum(axis=1)
+        mkt = np.where(cnt > 0, np.nansum(lr, axis=1) / np.maximum(cnt, 1), np.nan)
+        mk = np.repeat(mkt[:, None], S, axis=1)
+        mk = np.where(np.isnan(lr), np.nan, mk)
+        cov = _rolling_mean(lr * mk, 60) - _rolling_mean(lr, 60) * _rolling_mean(mk, 60)
+        var = _rolling_mean(mk * mk, 60) - _rolling_mean(mk, 60) ** 2
+        raw[:, :, 13] = np.where(var > 0, cov / var, np.nan)
+        # 7 ve 30 günlük hacim ortalamaları
+        qv7 = _rolling_mean(QV, 7)
+        qv30 = _rolling_mean(QV, 30)
+        raw[:, :, 15] = np.log(qv7 / qv30)
         for j in range(S):
             col = C[:, j]
             ok = ~np.isnan(col)
-            if ok.sum() < MIN_HISTORY:
+            if ok.sum() < 60:
                 continue
             first = int(np.argmax(ok))
-            seg = col[first:]
-            segf = np.where(np.isnan(seg), np.nan, seg)
-            # boşlukları ileri doldurarak göstergeleri hesapla (Binance günlük verisinde boşluk nadirdir)
-            filled = segf.copy()
+            filled = col[first:].copy()
             for i in range(1, len(filled)):
                 if np.isnan(filled[i]):
                     filled[i] = filled[i - 1]
             raw[first:, j, 6] = rsi(filled, 14)
             raw[first:, j, 7] = filled / ema(filled, 20) - 1.0
             raw[first:, j, 8] = filled / ema(filled, 50) - 1.0
-            for i in range(first + 14, D):
-                w = lr[i - 13:i + 1, j]
-                w = w[~np.isnan(w)]
-                if len(w) >= 10:
-                    raw[i, j, 5] = float(np.std(w))
             for i in range(first + 29, D):
-                raw[i, j, 9] = C[i, j] / np.nanmax(C[i - 29:i + 1, j]) - 1.0
+                w = C[i - 29:i + 1, j]
+                raw[i, j, 9] = C[i, j] / np.nanmax(w) - 1.0
+                r = raw[i - 29:i + 1, j, 0]
+                if (~np.isnan(r)).sum() >= 20:
+                    raw[i, j, 14] = np.nanmax(r)
                 q = lqv[i - 30:i, j]
                 q = q[~np.isnan(q)]
                 if len(q) >= 20 and q.std() > 0 and not np.isnan(lqv[i, j]):
@@ -121,18 +160,17 @@ def build_panel(daily: dict[str, dict[str, np.ndarray]], funding: Optional[dict[
                 hi = np.searchsorted(ft, end_t, side="left")
                 lo = np.searchsorted(ft, end_t - 3 * DAY, side="left")
                 cnt = hi - lo
-                v = np.where(cnt > 0, (cs[hi] - cs[lo]) / np.maximum(cnt, 1), np.nan)
-                raw[:, j, 12] = v
+                raw[:, j, 12] = np.where(cnt > 0, (cs[hi] - cs[lo]) / np.maximum(cnt, 1), np.nan)
     X = np.stack([_rank_norm(raw[:, :, k]) for k in range(F)], axis=2)
-    # eksik özellik (ör. funding verisi olmayan coin/gün) nötr = sıralamanın ortası (0)
-    X = np.where(np.isnan(X), 0.0, X)
-    # işlem görebilirlik: en az MIN_HISTORY gün geçmiş, son 30 günün ortalama hacmi yeterli, bugün ve yarın fiyat var
+    X = np.where(np.isnan(X), 0.0, X)  # eksik özellik nötr (sıralamanın ortası)
     hist_days = np.cumsum(~np.isnan(C), axis=0)
-    qv30 = np.full((D, S), np.nan)
-    for i in range(30, D):
-        qv30[i] = np.nanmean(QV[i - 30:i], axis=0)
-    tradable = (hist_days >= MIN_HISTORY) & (np.nan_to_num(qv30) >= min_qv) & ~np.isnan(C)
-    return Panel(t=t, syms=syms, X=X, close=C, tradable=tradable)
+    r1 = raw[:, :, 0]
+    r3 = raw[:, :, 1]
+    tradable = (
+        (hist_days >= MIN_HISTORY) & (np.nan_to_num(qv30) >= min_qv) & ~np.isnan(C) & ~np.isnan(vol) & (vol > 0)
+        & (np.abs(np.nan_to_num(r1)) <= MAX_ABS_R1) & (np.abs(np.nan_to_num(r3)) <= MAX_ABS_R3)
+    )
+    return Panel(t=t, syms=syms, X=X, close=C, tradable=tradable, vol=np.nan_to_num(vol, nan=0.0))
 
 
 def forward_returns(close: np.ndarray, h: int) -> np.ndarray:

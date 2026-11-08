@@ -372,8 +372,13 @@ class CrowdCollector:
         return await mgr.load_ml_inputs(syms, days, lambda f, m: None, lambda: False)
 
     async def ml_paper_update(self, force: bool = False) -> None:
-        """Günde bir (UTC gün kapanışından sonra): dünkü pozisyonların getirisini işler, gerekirse yeni seçimi yapar.
-        Model 30 günden eskiyse önce tüm veriyle kendini yeniden eğitir."""
+        """Günde bir (UTC gün kapanışından sonra): önceki pozisyonların getirisini işler, gerekirse yeniden dengeler.
+        Model 30 günden eskiyse önce tüm veriyle kendini yeniden eğitir. Kurallar geçmiş testtekiyle aynıdır:
+        oynaklığa ters orantılı ağırlıklar ve portföy oynaklığı hedefleme."""
+        import math
+
+        from ..ml import model as M
+        from ..ml.features import forward_returns
         db = self.ctx.db
         m = await db.kv_get("ml_model", None)
         if not m:
@@ -385,68 +390,83 @@ class CrowdCollector:
             return
         if (now % DAY) < 20 * 60_000 and not force:
             return  # günlük mumların oturması için gece yarısından sonra biraz bekle
-        from ..ml.features import forward_returns
-        from ..ml.model import ridge_fit, _training_set
-        panel = await self._ml_panel(400)
-        if panel is None or len(panel.t) < 60:
-            return
-        # aylık otomatik yeniden eğitim
+        h = int(m.get("hold_days", 1))
+        n = int(m.get("top_n", 8))
+        kind = m.get("kind") or ("ridge" if m.get("type") == "ridge" else "gbm")
+        # aylık otomatik yeniden eğitim (tüm veriyle, aynı model türü)
         if now - int(m.get("retrained_at", 0)) > 30 * DAY:
             big = await self._ml_panel(1000)
             if big is not None and len(big.t) > 200:
-                fwd = forward_returns(big.close, int(m["hold_days"]))
-                X, y = await asyncio.to_thread(_training_set, big, fwd, len(big.t) - int(m["hold_days"]) - 1)
-                if len(y) >= 200:
-                    m["coef"] = ridge_fit(X, y, float(m["lambda"])).tolist()
-                    m["retrained_at"] = now
-                    m["trained_until"] = int(big.t[-1])
-                    await db.kv_set("ml_model", m, now)
-                    log.info("Model kendini yeniden eğitti (%d gözlem)", len(y))
+                fwd = forward_returns(big.close, h)
+                X, y = await asyncio.to_thread(M._training_set, big, fwd, len(big.t) - h - 1, h)
+                if len(y) >= 300:
+                    fit_kind = kind if kind in M.MODELS else ("ridge300" if m.get("type") == "ridge" else "gbm")
                     try:
+                        new = await asyncio.to_thread(M.fit, fit_kind, X, y)
+                        new = {k: v for k, v in new.items() if k != "_obj"}
+                        m.update(new)
+                        m["retrained_at"] = now
+                        m["trained_until"] = int(big.t[-1])
+                        await db.kv_set("ml_model", m, now)
+                        log.info("Model kendini yeniden eğitti (%d gözlem)", len(y))
                         self.ctx.notifier.notify("🤖 <b>Yapay zeka modeli</b> son verilerle kendini yeniden eğitti.", kind="system")
                     except Exception:
-                        pass
-        n, h = int(m["top_n"]), int(m["hold_days"])
-        w = np.array(m["coef"])
-        last = len(panel.t) - 1  # son tamamlanmış gün
+                        log.exception("Model yeniden eğitilemedi")
+        panel = await self._ml_panel(400)
+        if panel is None or len(panel.t) < 120:
+            return
+        last = len(panel.t) - 1
         day_t = int(panel.t[last])
         if not paper:
-            paper = {"started_at": now, "cum": 0.0, "long": [], "short": [], "hold_left": 0, "last_day": None,
-                     "last_bar": None, "history": []}
-        idx = {s: i for i, s in enumerate(panel.syms)}
+            paper = {"started_at": now, "cum": 0.0, "longs": {}, "shorts": {}, "hold_left": 0, "last_day": None,
+                     "last_bar": None, "history": [], "raw": []}
+        idx = {s_: k for k, s_ in enumerate(panel.syms)}
+        target_daily = M.TARGET_ANNUAL_VOL / math.sqrt(365)
         # önceki seçimden bu yana tamamlanan günlerin getirisi
         if paper.get("last_bar") is not None and day_t > paper["last_bar"]:
             d0 = int(np.searchsorted(panel.t, paper["last_bar"]))
             for d in range(d0, last):
-                lv = [panel.close[d + 1, idx[s]] / panel.close[d, idx[s]] - 1 for s in paper["long"] if s in idx
-                      and panel.close[d, idx[s]] > 0 and not np.isnan(panel.close[d + 1, idx[s]])]
-                sv = [panel.close[d + 1, idx[s]] / panel.close[d, idx[s]] - 1 for s in paper["short"] if s in idx
-                      and panel.close[d, idx[s]] > 0 and not np.isnan(panel.close[d + 1, idx[s]])]
-                if lv and sv:
-                    r = 0.5 * float(np.mean(lv)) - 0.5 * float(np.mean(sv))
+                def leg(book: dict) -> float:
+                    tot = 0.0
+                    for s_, w in book.items():
+                        c = idx.get(s_)
+                        if c is None:
+                            continue
+                        a, b = panel.close[d, c], panel.close[d + 1, c]
+                        if a > 0 and not np.isnan(b):
+                            tot += w * (b / a - 1)
+                    return tot
+                if paper["longs"]:
+                    raw = leg(paper["longs"]) - leg(paper["shorts"])
+                    past = np.array(paper.get("raw", [])[-30:])
+                    scale = float(np.clip(target_daily / past.std(), 0.3, 1.5)) if len(past) >= 10 and past.std() > 0 else 1.0
+                    r = scale * raw
+                    paper["raw"] = (paper.get("raw", []) + [raw])[-60:]
                     paper["cum"] = (1 + paper["cum"]) * (1 + r) - 1
                     paper["history"] = (paper["history"] + [{"t": int(panel.t[d + 1]), "ret_pct": r * 100.0}])[-400:]
                 paper["hold_left"] = int(paper.get("hold_left", 0)) - 1
         # yeniden dengeleme
         if paper.get("last_bar") != day_t and paper.get("hold_left", 0) <= 0:
             ok = panel.tradable[last]
-            if ok.sum() >= 2 * n:
-                sc = panel.X[last, ok] @ w
-                cand = np.flatnonzero(ok)
-                order = cand[np.argsort(sc)]
-                new_long = [panel.syms[c] for c in order[-n:][::-1]]
-                new_short = [panel.syms[c] for c in order[:n]]
-                turnover = (len(set(new_long) ^ set(paper["long"])) + len(set(new_short) ^ set(paper["short"]))) / (2 * n)
-                paper["cum"] = (1 + paper["cum"]) * (1 - turnover * 2 * 0.001) - 1
-                if set(new_long) != set(paper["long"]) or set(new_short) != set(paper["short"]):
-                    try:
-                        self.ctx.notifier.notify(
-                            "🤖 <b>Yapay zeka modeli</b> (sanal)\nLong: " + ", ".join(x.replace("USDT", "") for x in new_long)
-                            + "\nShort: " + ", ".join(x.replace("USDT", "") for x in new_short), kind="system")
-                    except Exception:
-                        pass
-                paper["long"], paper["short"] = new_long, new_short
-                paper["hold_left"] = h
+            if ok.sum() >= 12:
+                sc = np.full(len(panel.syms), np.nan)
+                sc[ok] = M.predict(m, panel.X[last, ok])
+                lw, sw = M.pick(panel, last, sc, n)
+                if lw:
+                    nl = {panel.syms[c]: w for c, w in lw.items()}
+                    ns = {panel.syms[c]: w for c, w in sw.items()}
+                    turnover = sum(abs(nl.get(k, 0) - paper["longs"].get(k, 0)) for k in set(nl) | set(paper["longs"]))
+                    turnover += sum(abs(ns.get(k, 0) - paper["shorts"].get(k, 0)) for k in set(ns) | set(paper["shorts"]))
+                    paper["cum"] = (1 + paper["cum"]) * (1 - turnover * 0.001) - 1
+                    if set(nl) != set(paper["longs"]) or set(ns) != set(paper["shorts"]):
+                        try:
+                            self.ctx.notifier.notify(
+                                "🤖 <b>Yapay zeka modeli</b> (sanal)\nLong: " + ", ".join(x.replace("USDT", "") for x in nl)
+                                + "\nShort: " + ", ".join(x.replace("USDT", "") for x in ns), kind="system")
+                        except Exception:
+                            pass
+                    paper["longs"], paper["shorts"] = nl, ns
+                    paper["hold_left"] = h
         paper["last_bar"] = day_t
         paper["last_day"] = today
         await db.kv_set("ml_paper", paper, now)
@@ -456,10 +476,11 @@ class CrowdCollector:
         p = await self.ctx.db.kv_get("ml_paper", None)
         out: dict[str, Any] = {"active": bool(m)}
         if m:
-            out["model"] = {k: m.get(k) for k in ("lambda", "hold_days", "top_n", "trained_until", "retrained_at", "applied_at", "source_job")}
+            out["model"] = {k: m.get(k) for k in ("kind", "lambda", "hold_days", "top_n", "trained_until", "retrained_at", "applied_at", "source_job")}
         if p:
             days = max(0.0, (now_ms() - int(p["started_at"])) / DAY)
             out["paper"] = {"started_at": p["started_at"], "return_pct": float(p["cum"]) * 100.0, "equity": 1000.0 * (1 + float(p["cum"])),
-                            "days": days, "long": p.get("long", []), "short": p.get("short", []), "history": p.get("history", [])[-60:]}
+                            "days": days, "long": list(p.get("longs", {}) or p.get("long", [])),
+                            "short": list(p.get("shorts", {}) or p.get("short", [])), "history": p.get("history", [])[-60:]}
         return out
 

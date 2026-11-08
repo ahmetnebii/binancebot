@@ -1,32 +1,56 @@
-"""Kendi kendini eğiten çapraz kesit modeli (ridge regresyon) ve aylık yeniden eğitimli (walk-forward) test.
+"""Kendi kendini eğiten çapraz kesit modeli: aylık yeniden eğitim (walk-forward), iki model türü yarışır.
 
-Her ayın başında model YALNIZCA o güne kadarki veriyle (hedefi bilinen günlerle, araya tampon konarak)
-yeniden eğitilir ve o ay boyunca günlük tahmin yapar. Tahmini en yüksek N coin long, en düşük N coin short;
-pozisyonlar H günde bir yenilenir. Sermaye: yarısı long, yarısı short (piyasa yönüne bahis yok).
+Modeller:
+- ridge: doğrusal regresyon (sağlam, az ezberler)
+- gbm  : LightGBM gradyan artırmalı karar ağaçları (özellikler arası etkileşimleri öğrenir; sıkı düzenlileştirme)
 
-Ayar seçimi (λ, N, H) yalnızca walk-forward döneminin İLK yarısına göre yapılır; raporlanan "final" sonuç
-ikinci yarıdır (ayar seçiminde hiç kullanılmadı).
+Hedef: riske göre getiri — sonraki H günün getirisi / (coinin oynaklığı × √H), aşırı değerler kırpılır ve o
+günkü coin ortalamasından arındırılır. Böylece model "en çok sıçrayacak" oynak coinleri değil,
+"riskine göre en iyi gidecek" coinleri öğrenir.
+
+Portföy: tahmini en yüksek N coin long, en düşük N coin short; her bacak sermayenin yarısı, coinler
+oynaklıklarıyla ters orantılı ağırlıklı (tek coin eşit ağırlığın en fazla 2 katı). Portföy oynaklığı
+hedeflenir: stratejinin son 30 günlük gerçekleşen oynaklığı yüksekse pozisyonlar küçülür.
+
+Ayar seçimi (model türü, H, N) walk-forward döneminin İLK yarısına göre yapılır; "final" ikinci yarıdır.
 """
 from __future__ import annotations
 
 import itertools
 import math
 from datetime import datetime, timezone
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import numpy as np
 
 from .features import DAY, FEATURES, Panel, forward_returns
 
-LAMBDAS = [10.0, 100.0, 1000.0]
-TOP_N = [3, 5, 10]
+try:  # LightGBM yoksa (ör. Windows'ta eksik sistem kütüphanesi) yalnızca ridge kullanılır
+    import lightgbm as lgb
+except Exception:  # pragma: no cover
+    lgb = None
+
+MODELS = ["ridge30", "ridge300", "gbm"]
 HOLD = [1, 3, 7]
+TOP_N = [8, 12]
 MIN_TRAIN_DAYS = 300
 EMBARGO = 2
+TARGET_ANNUAL_VOL = 0.25
+TARGET_CLIP = 4.0
+GBM_PARAMS = {
+    "objective": "regression", "learning_rate": 0.05, "num_leaves": 15, "min_data_in_leaf": 300,
+    "feature_fraction": 0.8, "bagging_fraction": 0.8, "bagging_freq": 1, "lambda_l2": 10.0,
+    "verbose": -1, "seed": 7, "deterministic": True, "num_threads": 4,
+}
+GBM_ROUNDS = 150
 
 
 def month_of(ts: int) -> str:
     return datetime.fromtimestamp(ts / 1000, tz=timezone.utc).strftime("%Y-%m")
+
+
+def available_models() -> list[str]:
+    return [m for m in MODELS if m != "gbm" or lgb is not None]
 
 
 def ridge_fit(X: np.ndarray, y: np.ndarray, lam: float) -> np.ndarray:
@@ -34,87 +58,143 @@ def ridge_fit(X: np.ndarray, y: np.ndarray, lam: float) -> np.ndarray:
     return np.linalg.solve(A, X.T @ y)
 
 
-def _training_set(panel: Panel, fwd: np.ndarray, end_day: int) -> tuple[np.ndarray, np.ndarray]:
-    """end_day'den ÖNCE hedefi tamamen bilinen gözlemler (piyasa ortalamasından arındırılmış hedef)."""
+def _target(panel: Panel, fwd: np.ndarray, d: int, ok: np.ndarray, h: int) -> np.ndarray:
+    v = panel.vol[d, ok] * math.sqrt(h)
+    y = np.clip(fwd[d, ok] / np.maximum(v, 1e-4), -TARGET_CLIP, TARGET_CLIP)
+    return y - y.mean()
+
+
+def _training_set(panel: Panel, fwd: np.ndarray, end_day: int, h: int = 1) -> tuple[np.ndarray, np.ndarray]:
+    """end_day'den ÖNCE hedefi tamamen bilinen gözlemler (riske göre, piyasa-nötr hedef)."""
     Xs, ys = [], []
     for d in range(0, max(0, end_day)):
-        ok = panel.tradable[d] & ~np.isnan(fwd[d]) & ~np.isnan(panel.X[d]).any(axis=1)
+        ok = panel.tradable[d] & ~np.isnan(fwd[d])
         if ok.sum() < 8:
             continue
-        y = fwd[d, ok]
         Xs.append(panel.X[d, ok])
-        ys.append(y - y.mean())
+        ys.append(_target(panel, fwd, d, ok, h))
     if not Xs:
         return np.zeros((0, panel.X.shape[2])), np.zeros(0)
     return np.vstack(Xs), np.concatenate(ys)
 
 
-def walk_forward_scores(panel: Panel, h: int, lam: float, progress: Optional[Callable[[float], None]] = None) -> tuple[np.ndarray, dict]:
-    """Her gün için tahmin skorları [gün, coin] (NaN = tahmin yok) ve ay bazında katsayılar."""
+def fit(kind: str, X: np.ndarray, y: np.ndarray) -> dict:
+    """Model sözlüğü: canlıda da aynen kullanılır (kv'de saklanabilir)."""
+    if kind.startswith("ridge"):
+        lam = float(kind.replace("ridge", "") or 100)
+        return {"type": "ridge", "coef": ridge_fit(X, y, lam).tolist(), "lambda": lam}
+    if lgb is None:
+        raise RuntimeError("LightGBM kurulu değil")
+    booster = lgb.train(GBM_PARAMS, lgb.Dataset(X, y, free_raw_data=True), num_boost_round=GBM_ROUNDS)
+    return {"type": "gbm", "booster": booster.model_to_string(), "_obj": booster,
+            "gain": booster.feature_importance(importance_type="gain").tolist()}
+
+
+def predict(model: dict, X: np.ndarray) -> np.ndarray:
+    if model["type"] == "ridge":
+        return X @ np.asarray(model["coef"])
+    obj = model.get("_obj")
+    if obj is None:
+        obj = lgb.Booster(model_str=model["booster"])
+        model["_obj"] = obj
+    return obj.predict(X)
+
+
+def walk_forward_scores(panel: Panel, h: int, kind: str, progress: Optional[Callable[[float], None]] = None) -> tuple[np.ndarray, list[dict]]:
+    """Her gün için tahmin skorları [gün, coin] (NaN = tahmin yok) ve aylık modeller."""
     D = len(panel.t)
     fwd = forward_returns(panel.close, h)
     scores = np.full(panel.close.shape, np.nan)
     months = [month_of(int(x)) for x in panel.t]
     starts = [i for i in range(1, D) if months[i] != months[i - 1]]
-    coefs = {}
+    models: list[dict] = []
     first = next((i for i in starts if i >= MIN_TRAIN_DAYS), None)
     if first is None:
-        return scores, coefs
+        return scores, models
     blocks = [i for i in starts if i >= first] + [D]
     for bi in range(len(blocks) - 1):
         m0, m1 = blocks[bi], blocks[bi + 1]
-        X, y = _training_set(panel, fwd, m0 - h - EMBARGO)
-        if len(y) < 200:
+        X, y = _training_set(panel, fwd, m0 - h - EMBARGO, h)
+        if len(y) < 300:
             continue
-        w = ridge_fit(X, y, lam)
-        coefs[months[m0]] = w
+        mdl = fit(kind, X, y)
+        models.append({k: v for k, v in mdl.items() if k not in ("_obj", "booster")})
         for d in range(m0, m1):
-            ok = panel.tradable[d] & ~np.isnan(panel.X[d]).any(axis=1)
+            ok = panel.tradable[d]
             if ok.sum() >= 8:
-                scores[d, ok] = panel.X[d, ok] @ w
+                scores[d, ok] = predict(mdl, panel.X[d, ok])
         if progress:
             progress((bi + 1) / (len(blocks) - 1))
-    return scores, coefs
+    return scores, models
+
+
+def leg_weights(vols: np.ndarray, idx: np.ndarray) -> dict[int, float]:
+    """Bir bacak (long ya da short) için oynaklığa ters orantılı ağırlıklar; toplam 0.5, tek coin ≤ 2× eşit ağırlık."""
+    v = np.maximum(vols[idx], 1e-3)
+    w = 1.0 / v
+    w = w / w.sum()
+    cap = 2.0 / len(idx)
+    for _ in range(5):
+        over = w > cap
+        if not over.any():
+            break
+        excess = float((w[over] - cap).sum())
+        w[over] = cap
+        under = ~over
+        if under.any():
+            w[under] += excess * w[under] / w[under].sum()
+    return {int(c): float(x) * 0.5 for c, x in zip(idx, w)}
+
+
+def pick(panel: Panel, d: int, scores_row: np.ndarray, n: int) -> tuple[dict[int, float], dict[int, float]]:
+    ok = np.flatnonzero(~np.isnan(scores_row) & panel.tradable[d])
+    n = min(n, len(ok) // 4)
+    if n < 3:
+        return {}, {}
+    order = ok[np.argsort(scores_row[ok])]
+    return leg_weights(panel.vol[d], order[-n:]), leg_weights(panel.vol[d], order[:n])
 
 
 def simulate(panel: Panel, scores: np.ndarray, n: int, h: int, fee: float, slip: float) -> dict:
-    """Günlük getiri serisi (sermayeye göre, 1x brüt). Her h günde bir yeniden dengeleme."""
+    """Günlük getiri serisi (sermayeye göre, 1x brüt, oynaklık hedeflemeli). Her h günde bir yeniden dengeleme."""
     D, S = panel.close.shape
     r1 = forward_returns(panel.close, 1)
+    raw_rets = np.full(D, np.nan)
     rets = np.full(D, np.nan)
-    long_set: set[int] = set()
-    short_set: set[int] = set()
+    longs: dict[int, float] = {}
+    shorts: dict[int, float] = {}
     trades = []
-    entries = 0
     hold_left = 0
     cost_side = fee + slip
+    target_daily = TARGET_ANNUAL_VOL / math.sqrt(365)
     for d in range(D - 1):
+        cost = 0.0
         if hold_left <= 0 and not np.isnan(scores[d]).all():
-            sc = scores[d]
-            ok = np.flatnonzero(~np.isnan(sc))
-            if len(ok) >= 2 * n:
-                order = ok[np.argsort(sc[ok])]
-                new_long, new_short = set(order[-n:].tolist()), set(order[:n].tolist())
-                turnover = (len(new_long ^ long_set) + len(new_short ^ short_set)) / (2 * n)
-                for c in new_long - long_set:
-                    trades.append({"symbol": panel.syms[c], "side": "LONG", "entry_time": int(panel.t[d] + DAY)})
-                for c in new_short - short_set:
-                    trades.append({"symbol": panel.syms[c], "side": "SHORT", "entry_time": int(panel.t[d] + DAY)})
-                entries += len(new_long - long_set) + len(new_short - short_set)
-                long_set, short_set = new_long, new_short
+            nl, ns = pick(panel, d, scores[d], n)
+            if nl:
+                turnover = sum(abs(nl.get(c, 0) - longs.get(c, 0)) for c in set(nl) | set(longs))
+                turnover += sum(abs(ns.get(c, 0) - shorts.get(c, 0)) for c in set(ns) | set(shorts))
+                cost = turnover * cost_side
+                for c in set(nl) - set(longs):
+                    trades.append({"symbol": panel.syms[c], "side": "LONG", "entry_time": int(panel.t[d] + DAY), "weight_pct": nl[c] * 100})
+                for c in set(ns) - set(shorts):
+                    trades.append({"symbol": panel.syms[c], "side": "SHORT", "entry_time": int(panel.t[d] + DAY), "weight_pct": ns[c] * 100})
+                longs, shorts = nl, ns
                 hold_left = h
-                cost = turnover * 2 * cost_side  # her değişen pozisyon: kapat + aç
-            else:
-                cost = 0.0
-        else:
-            cost = 0.0
-        if long_set or short_set:
-            lv = [r1[d, c] for c in long_set if not np.isnan(r1[d, c])]
-            sv = [r1[d, c] for c in short_set if not np.isnan(r1[d, c])]
-            if lv and sv:
-                rets[d] = 0.5 * float(np.mean(lv)) - 0.5 * float(np.mean(sv)) - cost
+        if longs:
+            lv = sum(w * r1[d, c] for c, w in longs.items() if not np.isnan(r1[d, c]))
+            sv = sum(w * r1[d, c] for c, w in shorts.items() if not np.isnan(r1[d, c]))
+            raw = lv - sv
+            raw_rets[d] = raw
+            # oynaklık hedefleme: yalnızca GEÇMİŞ (d'den önceki) getirilere bakılır
+            past = raw_rets[max(0, d - 30):d]
+            past = past[~np.isnan(past)]
+            scale = 1.0
+            if len(past) >= 10 and past.std() > 0:
+                scale = float(np.clip(target_daily / past.std(), 0.3, 1.5))
+            rets[d] = scale * raw - cost
             hold_left -= 1
-    return {"rets": rets, "entries": entries, "trades": trades}
+    return {"rets": rets, "trades": trades}
 
 
 def metrics(rets: np.ndarray, t: np.ndarray, d0: int, d1: int) -> dict:
@@ -147,63 +227,88 @@ def metrics(rets: np.ndarray, t: np.ndarray, d0: int, d1: int) -> dict:
     }
 
 
+def _importance(kind: str, models: list[dict]) -> list[dict]:
+    if not models:
+        return []
+    if kind.startswith("ridge"):
+        W = np.array([m["coef"] for m in models])
+        return sorted(
+            [{"feature": FEATURES[i][0], "name": FEATURES[i][1], "coef": float(W[:, i].mean()),
+              "share_pct": None, "stability_pct": float((np.sign(W[:, i]) == np.sign(W[:, i].mean())).mean() * 100.0)}
+             for i in range(len(FEATURES))],
+            key=lambda x: -abs(x["coef"]),
+        )
+    G = np.array([m["gain"] for m in models], dtype=float)
+    g = G.mean(axis=0)
+    tot = g.sum() or 1.0
+    return sorted(
+        [{"feature": FEATURES[i][0], "name": FEATURES[i][1], "coef": None, "share_pct": float(g[i] / tot * 100.0),
+          "stability_pct": None} for i in range(len(FEATURES))],
+        key=lambda x: -(x["share_pct"] or 0),
+    )
+
+
+MODEL_TR = {"ridge30": "Doğrusal model (az düzenlileştirme)", "ridge300": "Doğrusal model (güçlü düzenlileştirme)",
+            "gbm": "LightGBM (karar ağaçları)"}
+
+
 def run(panel: Panel, fee: float = 0.0005, slip: float = 0.0005,
         progress: Optional[Callable[[float, str], None]] = None, cancelled: Callable[[], bool] = lambda: False) -> dict:
     D = len(panel.t)
     if D < MIN_TRAIN_DAYS + 120:
         raise ValueError(f"Model için en az {MIN_TRAIN_DAYS + 120} günlük veri gerekli (şu an {D})")
-    grid = list(itertools.product(LAMBDAS, HOLD))
-    score_cache: dict[tuple[float, int], np.ndarray] = {}
-    coef_cache: dict[tuple[float, int], dict] = {}
-    for gi, (lam, h) in enumerate(grid):
+    grid = list(itertools.product(available_models(), HOLD))
+    score_cache: dict[tuple[str, int], np.ndarray] = {}
+    model_cache: dict[tuple[str, int], list[dict]] = {}
+    for gi, (kind, h) in enumerate(grid):
         if cancelled():
             from ..backtest.data import BacktestCancelled
             raise BacktestCancelled()
-        sc, co = walk_forward_scores(panel, h, lam, (lambda f, gi=gi: progress(0.85 * (gi + f) / len(grid), "Model aylık olarak yeniden eğitiliyor ve test ediliyor")) if progress else None)
-        score_cache[(lam, h)] = sc
-        coef_cache[(lam, h)] = co
-    # walk-forward dönemi: ilk tahmin gününden sona
+        msg = f"{MODEL_TR[kind]} · {h} günlük ufuk: aylık yeniden eğitim ve test"
+        sc, mods = walk_forward_scores(panel, h, kind, (lambda f, gi=gi, msg=msg: progress(0.85 * (gi + f) / len(grid), msg)) if progress else None)
+        score_cache[(kind, h)] = sc
+        model_cache[(kind, h)] = mods
     any_sc = next(iter(score_cache.values()))
     has = np.flatnonzero(~np.isnan(any_sc).all(axis=1))
     if len(has) < 60:
-        raise ValueError("Walk-forward için yeterli tahmin günü oluşmadı")
+        raise ValueError("Walk-forward için yeterli tahmin günü oluşmadı (likit coin sayısı az olabilir)")
     wf0, wf1 = int(has[0]), int(has[-1]) + 1
     mid = wf0 + (wf1 - wf0) // 2
     results = []
-    for (lam, h), sc in score_cache.items():
+    for (kind, h), sc in score_cache.items():
         for n in TOP_N:
             sim = simulate(panel, sc, n, h, fee, slip)
             sel = metrics(sim["rets"], panel.t, wf0, mid)
-            results.append({"lam": lam, "h": h, "n": n, "sel": sel, "sim": sim})
-    results.sort(key=lambda r: (r["sel"]["sharpe"]), reverse=True)
+            results.append({"kind": kind, "h": h, "n": n, "sel": sel, "sim": sim})
+    results.sort(key=lambda r: r["sel"]["sharpe"], reverse=True)
     best = results[0]
     final = metrics(best["sim"]["rets"], panel.t, mid, wf1)
     full_wf = metrics(best["sim"]["rets"], panel.t, wf0, wf1)
     trades_final = [tr for tr in best["sim"]["trades"] if tr["entry_time"] >= int(panel.t[mid])]
-    coefs = coef_cache[(best["lam"], best["h"])]
-    W = np.array(list(coefs.values())) if coefs else np.zeros((1, len(FEATURES)))
-    importance = sorted(
-        [{"feature": FEATURES[i][0], "name": FEATURES[i][1], "coef": float(W[:, i].mean()),
-          "stability_pct": float((np.sign(W[:, i]) == np.sign(W[:, i].mean())).mean() * 100.0)} for i in range(len(FEATURES))],
-        key=lambda x: -abs(x["coef"]),
-    )
-    # son model: tüm veriyle eğit (canlı kullanım için)
+    # aynı modelin diğer türlerle karşılaştırması (final döneminde; bilgi amaçlı, seçimde kullanılmadı)
+    compare = []
+    for kind in available_models():
+        cands = [r for r in results if r["kind"] == kind]
+        if cands:
+            b = cands[0]
+            fm = metrics(b["sim"]["rets"], panel.t, mid, wf1)
+            compare.append({"kind": kind, "name": MODEL_TR[kind], "hold_days": b["h"], "top_n": b["n"],
+                            "sel_sharpe": b["sel"]["sharpe"], "final_apr_pct": fm["apr_pct"], "final_t": fm["t_stat"],
+                            "final_dd_pct": fm["max_drawdown_pct"]})
+    # canlı kullanım için: tüm veriyle son model
     fwd = forward_returns(panel.close, best["h"])
-    X, y = _training_set(panel, fwd, D - best["h"] - 1)
-    w_last = ridge_fit(X, y, best["lam"]).tolist() if len(y) >= 200 else W[-1].tolist()
-    # bugünün seçimi
+    X, y = _training_set(panel, fwd, D - best["h"] - 1, best["h"])
+    last = fit(best["kind"], X, y)
     d = D - 1
-    ok = panel.tradable[d] & ~np.isnan(panel.X[d]).any(axis=1)
     today = []
-    if ok.sum() >= 2 * best["n"]:
-        sc = panel.X[d, ok] @ np.array(w_last)
-        idx = np.flatnonzero(ok)
-        order = idx[np.argsort(sc)]
-        today = ([{"symbol": panel.syms[c], "side": "LONG"} for c in order[-best["n"]:][::-1]]
-                 + [{"symbol": panel.syms[c], "side": "SHORT"} for c in order[:best["n"]]])
+    sc_today = np.full(len(panel.syms), np.nan)
+    ok = panel.tradable[d]
+    if ok.sum() >= 8:
+        sc_today[ok] = predict(last, panel.X[d, ok])
+    lw, sw = pick(panel, d, sc_today, best["n"])
+    today = ([{"symbol": panel.syms[c], "side": "LONG", "weight_pct": w * 100} for c, w in sorted(lw.items(), key=lambda x: -x[1])]
+             + [{"symbol": panel.syms[c], "side": "SHORT", "weight_pct": w * 100} for c, w in sorted(sw.items(), key=lambda x: -x[1])])
     f = final
-    # Uzun/kısa coin portföyü çok oynak: birkaç aylık sonuçta yüksek getiri şansla da görülebilir.
-    # Bu yüzden getiri yanında istatistiksel anlamlılık (günlük getirilerin t-değeri) da aranır.
     if (f["days"] >= 120 and f["t_stat"] >= 2.5 and f["apr_pct"] >= 10 and f["max_drawdown_pct"] <= 25
             and (f["positive_months_pct"] or 0) >= 60):
         verdict = "recommended"
@@ -213,19 +318,22 @@ def run(panel: Panel, fee: float = 0.0005, slip: float = 0.0005,
         verdict = "none"
     if progress:
         progress(1.0, "Model hazır")
+    live = {k: v for k, v in last.items() if k != "_obj"}
+    live.update({"kind": best["kind"], "hold_days": best["h"], "top_n": best["n"], "features": [x[0] for x in FEATURES],
+                 "trained_until": int(panel.t[-1])})
     return {
         "verdict": verdict,
-        "params": {"lambda": best["lam"], "hold_days": best["h"], "top_n": best["n"]},
+        "params": {"model": best["kind"], "model_name": MODEL_TR[best["kind"]], "hold_days": best["h"], "top_n": best["n"],
+                   "target_vol_pct": TARGET_ANNUAL_VOL * 100},
         "period": {"start": int(panel.t[wf0]), "split": int(panel.t[mid]), "end": int(panel.t[wf1 - 1] + DAY)},
         "selection": {k: v for k, v in best["sel"].items() if k != "monthly"},
         "final": f,
         "walk_forward": {k: v for k, v in full_wf.items() if k != "monthly"},
         "trades_final": trades_final[-2000:],
-        "importance": importance,
-        "model": {"coef": w_last, "features": [x[0] for x in FEATURES], "lambda": best["lam"],
-                  "hold_days": best["h"], "top_n": best["n"], "trained_until": int(panel.t[-1])},
+        "importance": _importance(best["kind"], model_cache[(best["kind"], best["h"])]),
+        "compare": compare,
+        "model": live,
         "today": today,
         "coins": len(panel.syms),
-        "grid": [{"lambda": r["lam"], "hold_days": r["h"], "top_n": r["n"], "sel_sharpe": r["sel"]["sharpe"],
-                  "sel_apr_pct": r["sel"]["apr_pct"]} for r in results[:15]],
+        "tradable_avg": float(panel.tradable[wf0:wf1].sum(axis=1).mean()),
     }

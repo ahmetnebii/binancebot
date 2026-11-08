@@ -1148,7 +1148,7 @@ class BacktestManager:
         daily = await load_daily_binance(hist, symbols, days, progress, cancelled)
         funding = (await hist.load(list(daily), now_ms() - days * 86_400_000, now_ms(), lambda f, m: None, cancelled,
                                    update_tail=False, funding_only=True)).funding
-        return await asyncio.to_thread(build_panel, daily, funding, 2_000_000.0)
+        return await asyncio.to_thread(build_panel, daily, funding, 20_000_000.0)
 
     async def _run_ml(self, job: dict) -> None:
         from ..ml import model as ml_model
@@ -1176,7 +1176,9 @@ class BacktestManager:
             res["warnings"] = [
                 "Model her ay yalnızca o güne kadarki veriyle yeniden eğitildi; tahmin edilen ay eğitimde hiç kullanılmadı.",
                 "Ayarlar (λ, coin sayısı, tutma süresi) walk-forward döneminin ilk yarısında seçildi; 'final' sonuç ikinci yarıdır.",
-                "Long/short coin portföyü: sermayenin yarısı long, yarısı short. Komisyon + kayma her yeniden dengelemede düşüldü.",
+                "Long/short coin portföyü: sermayenin yarısı long, yarısı short; coinler oynaklıklarıyla ters orantılı ağırlıklı, "
+                "portföy oynaklığı yıllık %25'e hedeflenir. Komisyon + kayma her yeniden dengelemede düşüldü.",
+                "Yalnızca likit coinler (30 günlük ortalama hacim ≥ 20M USDT, ≥ 90 gün geçmiş); son günlerde aşırı hareket eden coinlere girilmez.",
                 "Test, bugün listede olan coinlerle yapıldı (listeden çıkarılanlar yok); bu sonucu bir miktar iyimser yapabilir.",
             ]
             f = res["final"]

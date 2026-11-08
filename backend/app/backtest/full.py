@@ -124,10 +124,11 @@ def _ml_candidate(step_key: str, job_id: str, res: dict) -> Optional[dict]:
     return {
         "kind": "ml", "step": step_key, "job_id": job_id, "binance_only": True,
         "title": "Yapay zeka modeli (kendi kendini eğiten)",
-        "label": f"Her gün en iyi {pr.get('top_n')} coin long, en kötü {pr.get('top_n')} coin short · {pr.get('hold_days')} günde bir yenile",
+        "label": f"{pr.get('model_name', 'Model')} · en iyi {pr.get('top_n')} coin long, en kötü {pr.get('top_n')} short · {pr.get('hold_days')} günde bir yenile",
         "details": [
             f"{res.get('coins')} coin, günlük veri; model her ay yalnızca geçmiş veriyle yeniden eğitildi",
             "En etkili özellikler: " + ", ".join(i["name"] for i in (res.get("importance") or [])[:3]),
+            "Yarışan modeller (final dönemi, yıllık): " + ", ".join(f"{c['name']} %{c['final_apr_pct']:.0f}" for c in (res.get("compare") or [])),
             f"Final dönemi: t-değeri {f.get('t_stat', 0):.2f}, günlerin %{(f.get('hit_pct') or 0):.0f}'i artı",
         ],
         "verdict": res.get("verdict", "none"), "forward_ok": res.get("verdict") != "none",
