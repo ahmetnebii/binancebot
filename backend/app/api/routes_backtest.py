@@ -164,6 +164,22 @@ async def full_trades(job_id: str, idx: int, request: Request) -> dict:
         raise HTTPException(404, str(exc)) from exc
 
 
+@router.post("/ml")
+async def ml_run(request: Request) -> dict:
+    try:
+        return await manager(request).run_ml({})
+    except BacktestBusy as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/ml/{job_id}/apply")
+async def ml_apply(job_id: str, request: Request) -> dict:
+    try:
+        return await manager(request).apply_ml(job_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @router.get("/full/jobs")
 async def full_jobs(request: Request) -> list[dict]:
     return await manager(request).list("full")

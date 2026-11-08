@@ -1014,8 +1014,8 @@ class BacktestManager:
                         st["status"] = "done"
                         st["summary"] = {"days": crowd_res.get("days"), "enough": crowd_res.get("enough")}
                     else:
-                        maker = {"data": self.run_data_sync, "lab": self.run_lab_job, "carry": self.run_carry}[kind]
-                        runner = {"data": self._run_data_sync, "lab": self._run_lab, "carry": self._run_carry}[kind]
+                        maker = {"data": self.run_data_sync, "lab": self.run_lab_job, "carry": self.run_carry, "ml": self.run_ml}[kind]
+                        runner = {"data": self._run_data_sync, "lab": self._run_lab, "carry": self._run_carry, "ml": self._run_ml}[kind]
                         sub = await maker(dict(body), start=False)
                         st["job_id"] = sub["id"]
                         t = asyncio.create_task(runner(sub))
@@ -1084,6 +1084,9 @@ class BacktestManager:
         res = (sub or {}).get("result")
         if not res:
             raise ValueError("Bu adayın analiz sonucu bulunamadı (silinmiş olabilir)")
+        if c["kind"] == "ml":
+            trades = res.get("trades_final") or []
+            return {"kind": "ml", "trades": trades, "count": len(trades)}
         if c["kind"] == "lab":
             name = c["title"].replace("Strateji · ", "")
             g = next((g for g in res.get("groups") or [] if (c.get("group") and g.get("key") == c["group"]) or g.get("name") == name), None)
@@ -1111,3 +1114,105 @@ class BacktestManager:
         split_idx = int(np.searchsorted(w, period["split"]))
         trades = portfolio_trades(R, w, syms, hist, pr["top_n"], cost_rt, eff, from_idx=split_idx)
         return {"kind": "carry", "trades": trades, "count": len(trades), "recomputed": True}
+
+    # --- Kendi kendini eğiten model (ML) ----------------------------------------------
+    async def run_ml(self, body: dict[str, Any], start: bool = True) -> dict:
+        if start and self._task is not None and not self._task.done():
+            raise BacktestBusy("Çalışan bir iş var; bitmesini bekleyin veya iptal edin")
+        days = int(body.get("days") or 1000)
+        if not 420 <= days <= 1000:
+            raise ValueError("Model için süre 420 ile 1000 gün arasında olmalı")
+        job = {
+            "id": new_id("ml"), "kind": "ml", "created_at": now_ms(), "finished_at": None,
+            "status": "queued", "progress": {"phase": "data", "pct": 0.0, "message": "Sırada"},
+            "config": {"days": days, "symbols": self._all_perps()}, "error": None, "summary": None,
+        }
+        await self.ctx.db.bt_save(job)
+        if not start:
+            return job
+        self._cancel.clear()
+        self._job = job
+        self._publish(job, force=True)
+        self._task = asyncio.create_task(self._run_ml(job), name=f"ml-{job['id']}")
+        return job
+
+    async def load_ml_inputs(self, symbols: list[str], days: int, progress, cancelled):
+        """Günlük mumlar (tüm coinler) + funding geçmişi (önbellekten) → özellik paneli."""
+        from ..ml.features import build_panel
+        from .data import load_daily_binance
+        hist = self._history()
+        if self.ctx.synthetic:
+            daily = await hist.load_daily(symbols, days, progress, cancelled)
+            funding = (await hist.load(symbols, now_ms() - days * 86_400_000, now_ms(), lambda f, m: None, cancelled)).funding
+            return await asyncio.to_thread(build_panel, daily, funding, 0.0)
+        daily = await load_daily_binance(hist, symbols, days, progress, cancelled)
+        funding = (await hist.load(list(daily), now_ms() - days * 86_400_000, now_ms(), lambda f, m: None, cancelled,
+                                   update_tail=False, funding_only=True)).funding
+        return await asyncio.to_thread(build_panel, daily, funding, 2_000_000.0)
+
+    async def _run_ml(self, job: dict) -> None:
+        from ..ml import model as ml_model
+        cfg = job["config"]
+        job["status"] = "running"
+        await self.ctx.db.bt_save(job)
+        self._publish(job, force=True)
+        try:
+            panel = await self.load_ml_inputs(
+                cfg["symbols"], cfg["days"], lambda f, m: self._set_progress(job, "data", f * 40.0, m), self._cancel.is_set,
+            )
+            loop = asyncio.get_running_loop()
+
+            def prog(f: float, m: str) -> None:
+                loop.call_soon_threadsafe(self._set_progress, job, "analyze", 40.0 + f * 60.0, m)
+
+            res = await asyncio.to_thread(ml_model.run, panel, 0.0005, 0.0005, prog, self._cancel.is_set)
+            texts = {
+                "recommended": "Model, aylık yeniden eğitimle hiç görmediği dönemde anlamlı ve istikrarlı kâr etti.",
+                "weak": "Model hiç görmediği dönemde kârda ama kanıt güçlü değil; yalnızca sanal takipte denenmeli.",
+                "none": "Model hiç görmediği dönemde anlamlı bir kâr üretemedi (sonuç şansla açıklanabilir düzeyde).",
+            }
+            res["verdict_text"] = texts[res["verdict"]]
+            res["data_source"] = "synthetic" if self.ctx.synthetic else "binance"
+            res["warnings"] = [
+                "Model her ay yalnızca o güne kadarki veriyle yeniden eğitildi; tahmin edilen ay eğitimde hiç kullanılmadı.",
+                "Ayarlar (λ, coin sayısı, tutma süresi) walk-forward döneminin ilk yarısında seçildi; 'final' sonuç ikinci yarıdır.",
+                "Long/short coin portföyü: sermayenin yarısı long, yarısı short. Komisyon + kayma her yeniden dengelemede düşüldü.",
+                "Test, bugün listede olan coinlerle yapıldı (listeden çıkarılanlar yok); bu sonucu bir miktar iyimser yapabilir.",
+            ]
+            f = res["final"]
+            job["status"] = "done"
+            job["finished_at"] = now_ms()
+            job["summary"] = {"verdict": res["verdict"], "final_apr_pct": f["apr_pct"], "final_t": f["t_stat"]}
+            job["progress"] = {"phase": "done", "pct": 100.0, "message": "Tamamlandı"}
+            await self.ctx.db.bt_save(job, res)
+            await self.ctx.events.log("info", "ml", f"Model analizi: {res['verdict_text']}", toast=True, title="Yapay zeka modeli")
+        except (BacktestCancelled, asyncio.CancelledError):
+            job["status"] = "cancelled"
+            job["finished_at"] = now_ms()
+            await self.ctx.db.bt_save(job)
+        except Exception as exc:
+            log.exception("Model analizi hatası")
+            job["status"] = "failed"
+            job["finished_at"] = now_ms()
+            job["error"] = str(exc)
+            await self.ctx.db.bt_save(job)
+            await self.ctx.events.log("error", "ml", f"Model analizi başarısız: {exc}", toast=True, title="Yapay zeka modeli")
+        finally:
+            self._publish(job, force=True)
+
+    async def apply_ml(self, job_id: str) -> dict:
+        """Modeli canlı (sanal) takibe alır; model her ay kendini yeniden eğitir."""
+        job = await self.ctx.db.bt_get(job_id)
+        if job is None or job.get("kind") != "ml" or job.get("status") != "done" or "result" not in job:
+            raise ValueError("Tamamlanmış bir model analizi bulunamadı")
+        m = {**job["result"]["model"], "source_job": job_id, "applied_at": now_ms(), "retrained_at": now_ms()}
+        await self.ctx.db.kv_set("ml_model", m, now_ms())
+        await self.ctx.db.kv_delete("ml_paper")
+        job["applied_at"] = now_ms()
+        await self.ctx.db.bt_save(job)
+        self._publish(job, force=True)
+        if self.ctx.crowd is not None:
+            asyncio.get_running_loop().create_task(self.ctx.crowd.ml_paper_update(force=True))
+        await self.ctx.events.log("success", "ml", "Model canlı sanal takibe alındı; her gün işlem yapar, her ay kendini yeniden eğitir",
+                                  toast=True, title="Yapay zeka modeli")
+        return {"ok": True}

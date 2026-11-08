@@ -3,6 +3,7 @@ import type {
   BacktestConfigIn,
   BacktestJob,
   OptimizeJob,
+  MlStatus,
   FullJob,
   CarryJob,
   FundingRadar,
@@ -167,10 +168,13 @@ export const api = {
   optimizeJob: (id: string) => request<OptimizeJob>('GET', `/api/backtest/jobs/${encodeURIComponent(id)}`),
   runFull: () => request<FullJob>('POST', '/api/backtest/full'),
   fullTrades: (jobId: string, idx: number) =>
-    request<{ kind: 'lab' | 'carry'; count: number; recomputed?: boolean; trades: Record<string, unknown>[] }>(
+    request<{ kind: 'lab' | 'carry' | 'ml'; count: number; recomputed?: boolean; trades: Record<string, unknown>[] }>(
       'GET',
       `/api/backtest/full/${encodeURIComponent(jobId)}/trades/${idx}`,
     ),
+  applyMl: (id: string) => request<{ ok: boolean }>('POST', `/api/backtest/ml/${encodeURIComponent(id)}/apply`),
+  mlStatus: () => request<MlStatus>('GET', '/api/crowd/ml'),
+  mlUpdate: () => request<MlStatus>('POST', '/api/crowd/ml/update'),
   fullJobs: () => request<FullJob[]>('GET', '/api/backtest/full/jobs'),
   fullJob: (id: string) => request<FullJob>('GET', `/api/backtest/jobs/${encodeURIComponent(id)}`),
   runCarry: (cfg: { days?: number; top_n?: number; spot_fee?: number; leverage?: number; universe?: 'binance' | 'all' | 'cross' }) => request<CarryJob>('POST', '/api/backtest/carry', cfg),

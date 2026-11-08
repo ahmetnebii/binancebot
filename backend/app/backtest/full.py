@@ -24,6 +24,7 @@ STEPS: list[tuple[str, str, float, str, dict[str, Any]]] = [
      {"days": 1095, "top_n": 1000, "spot_fee": 0.00075, "leverage": 3, "universe": "all"}),
     ("carry_cross", "Funding arbitrajı · çapraz borsa (Bybit / OKX / Gate spot)", 5, "carry",
      {"days": 1095, "top_n": 1000, "spot_fee": 0.001, "leverage": 3, "universe": "cross"}),
+    ("ml", "Kendi kendini eğiten model (tüm coinler, günlük, aylık yeniden eğitim)", 6, "ml", {"days": 1000}),
     ("crowd", "Kalabalık verisi analizi", 4, "crowd", {}),
 ]
 
@@ -115,6 +116,31 @@ def _carry_candidate(step_key: str, title: str, job_id: str, res: dict) -> Optio
     }
 
 
+def _ml_candidate(step_key: str, job_id: str, res: dict) -> Optional[dict]:
+    f = res.get("final")
+    if not f or not f.get("days"):
+        return None
+    pr = res.get("params") or {}
+    return {
+        "kind": "ml", "step": step_key, "job_id": job_id, "binance_only": True,
+        "title": "Yapay zeka modeli (kendi kendini eğiten)",
+        "label": f"Her gün en iyi {pr.get('top_n')} coin long, en kötü {pr.get('top_n')} coin short · {pr.get('hold_days')} günde bir yenile",
+        "details": [
+            f"{res.get('coins')} coin, günlük veri; model her ay yalnızca geçmiş veriyle yeniden eğitildi",
+            "En etkili özellikler: " + ", ".join(i["name"] for i in (res.get("importance") or [])[:3]),
+            f"Final dönemi: t-değeri {f.get('t_stat', 0):.2f}, günlerin %{(f.get('hit_pct') or 0):.0f}'i artı",
+        ],
+        "verdict": res.get("verdict", "none"), "forward_ok": res.get("verdict") != "none",
+        # diğer yöntemlerle aynı ölçü: basit yıllıklandırma (kısa dönemde bileşik hesap anlamsız büyür)
+        "oos_return_pct": f["return_pct"], "oos_days": float(f["days"]),
+        "oos_apr_pct": f["return_pct"] / max(1.0, float(f["days"])) * 365.0,
+        "oos_max_dd_pct": f["max_drawdown_pct"], "oos_trades": len(res.get("trades_final") or []),
+        "oos_expectancy_r": None, "full_return_pct": None,
+        "monthly": f.get("monthly") or [],
+        "how": "Canlı sanal takibe alınır: her gün kendi seçimini yapar, her ay kendini yeniden eğitir.",
+    }
+
+
 def rank_key(c: dict) -> tuple:
     return (VERDICT_RANK.get(c["verdict"], 1 if c.get("forward_ok") else 0), c["oos_apr_pct"])
 
@@ -128,6 +154,10 @@ def build_report(steps: list[dict], step_results: dict[str, Optional[dict]], cro
             continue
         if st["key"].startswith("lab"):
             cands += _lab_candidates(st["key"], st.get("job_id"), res)
+        elif st["key"] == "ml":
+            c = _ml_candidate(st["key"], st.get("job_id"), res)
+            if c:
+                cands.append(c)
         elif st["key"].startswith("carry"):
             c = _carry_candidate(st["key"], st["name"].replace("Funding arbitrajı · ", "Funding · "), st.get("job_id"), res)
             if c:

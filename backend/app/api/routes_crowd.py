@@ -53,3 +53,15 @@ async def analysis(request: Request) -> dict:
     crowd_rows = await db.crowd_rows(since)
     funding_rows = await db.funding_rows(since)
     return await asyncio.to_thread(analyze, crowd_rows, funding_rows)
+
+
+@router.get("/ml")
+async def ml_status(request: Request) -> dict:
+    return await collector(request).ml_status()
+
+
+@router.post("/ml/update")
+async def ml_update(request: Request) -> dict:
+    c = collector(request)
+    await c.ml_paper_update(force=True)
+    return await c.ml_status()

@@ -865,7 +865,7 @@ export interface CrowdAnalysis {
 
 // --- Tek tuşla tam analiz -----------------------------------------------------
 export interface FullCandidate {
-  kind: 'lab' | 'carry';
+  kind: 'lab' | 'carry' | 'ml';
   step: string;
   job_id: string;
   title: string;
@@ -910,4 +910,10 @@ export interface FullJob extends Omit<BacktestJob, 'result' | 'summary' | 'confi
   config: { steps: FullStep[] };
   summary: { best_title: string | null; best_apr_pct: number | null; candidates: number } | null;
   result?: FullReport;
+}
+
+export interface MlStatus {
+  active: boolean;
+  model?: { lambda: number; hold_days: number; top_n: number; trained_until: number; retrained_at: number; applied_at: number; source_job: string };
+  paper?: { started_at: number; return_pct: number; equity: number; days: number; long: string[]; short: string[]; history: { t: number; ret_pct: number }[] };
 }

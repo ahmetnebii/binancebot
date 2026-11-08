@@ -74,7 +74,7 @@ function MonthlyChips({ m }: { m: Scaled['monthly'] }) {
 const isBinance = (c: FullCandidate) => c.binance_only !== false && c.step !== 'carry_cross';
 const RANK = (c: FullCandidate) => (c.verdict === 'recommended' ? 3 : c.verdict === 'weak' ? 2 : c.forward_ok ? 1 : 0);
 
-function TradesPanel({ jobId, idx, kind, k }: { jobId: string; idx: number; kind: 'lab' | 'carry'; k: number }) {
+function TradesPanel({ jobId, idx, kind, k }: { jobId: string; idx: number; kind: 'lab' | 'carry' | 'ml'; k: number }) {
   const [show, setShow] = useState(false);
   const data = useAsync(() => (show ? api.fullTrades(jobId, idx) : Promise.resolve(undefined)), [show, jobId, idx]);
   if (!show) {
@@ -94,12 +94,20 @@ function TradesPanel({ jobId, idx, kind, k }: { jobId: string; idx: number; kind
         <b className="text-fg">{tr.length} işlem</b> (aramada hiç kullanılmamış dönem).{' '}
         {kind === 'carry'
           ? `Funding'de bir işlem = bir coine girip çıkmak (spot al + vadeli short). Yüzdeler o coine ayrılan sermaye payına göre, ${k}x.`
+          : kind === 'ml'
+          ? 'Model her yeniden dengelemede en iyi coinlerde long, en kötülerde short açar; burada yeni açılan pozisyonlar listelenir.'
           : 'R: riske göre kazanç (1R = işlem başına riske edilen tutar).'}
       </div>
       <div className="max-h-80 overflow-auto rounded-lg border border-line">
         <table className="w-full min-w-[640px] text-[11.5px]">
           <thead className="sticky top-0 bg-surface">
-            {kind === 'carry' ? (
+            {kind === 'ml' ? (
+              <tr className="text-[10.5px] text-subtle">
+                <th className="px-2 py-1 text-left font-medium">Coin</th>
+                <th className="px-2 py-1 text-left font-medium">Yön</th>
+                <th className="px-2 py-1 text-left font-medium">Giriş</th>
+              </tr>
+            ) : kind === 'carry' ? (
               <tr className="text-[10.5px] text-subtle">
                 <th className="px-2 py-1 text-left font-medium">Coin</th>
                 <th className="px-2 py-1 text-left font-medium">Giriş</th>
@@ -123,7 +131,13 @@ function TradesPanel({ jobId, idx, kind, k }: { jobId: string; idx: number; kind
           </thead>
           <tbody>
             {tr.map((t, i) =>
-              kind === 'carry' ? (
+              kind === 'ml' ? (
+                <tr key={i} className="border-t border-line">
+                  <td className="px-2 py-1 font-medium text-fg">{String(t.symbol).replace('USDT', '')}</td>
+                  <td className={clsx('px-2 py-1', t.side === 'LONG' ? 'text-up' : 'text-down')}>{String(t.side)}</td>
+                  <td className="px-2 py-1 text-muted">{fmtDateTime(t.entry_time as number)}</td>
+                </tr>
+              ) : kind === 'carry' ? (
                 <tr key={i} className="border-t border-line">
                   <td className="px-2 py-1 font-medium text-fg">{String(t.symbol).replace('USDT', '')}</td>
                   <td className="px-2 py-1 text-muted">{fmtDateTime(t.entry_time as number)}</td>
@@ -191,11 +205,13 @@ function Steps({ steps }: { steps: FullStep[] }) {
 function CandidateActions({ c, onDone }: { c: FullCandidate; onDone: () => void }) {
   const { confirm, node } = useConfirm();
   const [busy, setBusy] = useState<string | null>(null);
-  const run = async (mode: 'paper' | 'live' | 'carry') => {
+  const run = async (mode: 'paper' | 'live' | 'carry' | 'ml') => {
     const ok = await confirm({
-      title: mode === 'carry' ? 'Funding kuralı radara uygulansın mı?' : mode === 'paper' ? 'Simülasyonda canlı denensin mi?' : 'Gerçekte uygulansın mı?',
+      title: mode === 'ml' ? 'Model canlı sanal takibe alınsın mı?' : mode === 'carry' ? 'Funding kuralı radara uygulansın mı?' : mode === 'paper' ? 'Simülasyonda canlı denensin mi?' : 'Gerçekte uygulansın mı?',
       message:
-        mode === 'carry'
+        mode === 'ml'
+          ? 'Model her gün sanal parayla (1.000 USDT) en iyi coinlerde long, en kötülerde short açar; her ay son verilerle kendini yeniden eğitir. Gerçek para kullanılmaz; seçimler Telegram’a da bildirilir.'
+          : mode === 'carry'
           ? 'Kural canlı funding radarına ve sanal funding portföyüne bağlanır. Gerçek para kullanılmaz; gerçekte uygulama adımları Funding sekmesinde.'
           : mode === 'paper'
           ? 'Bu analizdeki kurallar deneme olarak uygulanır: otomatik işlem yalnızca Simülasyon ortamında (sanal para) açılır. S1–S5 kapatılır.'
@@ -206,7 +222,8 @@ function CandidateActions({ c, onDone }: { c: FullCandidate; onDone: () => void 
     if (!ok) return;
     setBusy(mode);
     try {
-      if (mode === 'carry') await withToast(api.applyCarry(c.job_id), 'Uygulanamadı');
+      if (mode === 'ml') await withToast(api.applyMl(c.job_id), 'Uygulanamadı');
+      else if (mode === 'carry') await withToast(api.applyCarry(c.job_id), 'Uygulanamadı');
       else await withToast(api.applyLab(c.job_id, mode), 'Uygulanamadı');
       toast.success('Uygulandı');
       onDone();
@@ -219,7 +236,11 @@ function CandidateActions({ c, onDone }: { c: FullCandidate; onDone: () => void 
   return (
     <div className="flex flex-wrap gap-2">
       {node}
-      {c.kind === 'carry' ? (
+      {c.kind === 'ml' ? (
+        <Button size="sm" variant="success" icon={<Rocket className="h-3.5 w-3.5" />} onClick={() => run('ml')} loading={busy === 'ml'}>
+          Canlı sanal takibe al
+        </Button>
+      ) : c.kind === 'carry' ? (
         <Button size="sm" variant="success" icon={<Rocket className="h-3.5 w-3.5" />} onClick={() => run('carry')} loading={busy === 'carry'}>
           Radara uygula
         </Button>
@@ -294,6 +315,67 @@ function HeroCard({ c, title, tone, onDone, k, jobId, idx }: { c: FullCandidate;
   );
 }
 
+function MlLiveCard() {
+  const st = useAsync(() => api.mlStatus(), []);
+  const [busy, setBusy] = useState(false);
+  const d = st.data;
+  if (!d?.active) return null;
+  const p = d.paper;
+  const upd = async () => {
+    setBusy(true);
+    try {
+      st.setData(await withToast(api.mlUpdate(), 'Güncellenemedi'));
+    } catch {
+      /* toast */
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader
+        title="Yapay zeka modeli — canlı sanal takip"
+        subtitle={`Her gün en iyi ${d.model?.top_n} coin long, en kötü ${d.model?.top_n} coin short (${d.model?.hold_days} günde bir yeniler). Son eğitim: ${fmtDateTime(d.model?.retrained_at)}; her ay kendini otomatik yeniden eğitir.`}
+        icon={<Sparkles className="h-4 w-4 text-accent" />}
+        right={
+          <Button size="sm" variant="secondary" onClick={upd} loading={busy}>
+            Şimdi güncelle
+          </Button>
+        }
+      />
+      <div className="grid gap-3 px-4 pb-5 pt-1 md:grid-cols-[260px_minmax(0,1fr)]">
+        <div className="rounded-xl border border-line p-3 text-[12px]">
+          <div className="text-muted">Sanal bakiye (1.000 USDT ile)</div>
+          <div className={clsx('num text-[20px] font-semibold', pnlClass(p?.return_pct ?? 0))}>{p ? `${fmtNum(p.equity, 2)} USDT` : '—'}</div>
+          <div className={clsx('num', pnlClass(p?.return_pct ?? 0))}>{p ? pct(p.return_pct, 2) : ''}</div>
+          <div className="mt-1 text-subtle">{p ? `${fmtNum(p.days, 1)} gündür çalışıyor` : 'İlk seçim gece yarısından sonra yapılır'}</div>
+        </div>
+        <div className="space-y-2 text-[12px]">
+          <div>
+            <span className="font-medium text-up">Long: </span>
+            {p?.long?.length ? p.long.map((x) => x.replace('USDT', '')).join(', ') : '—'}
+          </div>
+          <div>
+            <span className="font-medium text-down">Short: </span>
+            {p?.short?.length ? p.short.map((x) => x.replace('USDT', '')).join(', ') : '—'}
+          </div>
+          {p?.history?.length ? (
+            <div className="flex flex-wrap gap-1">
+              {p.history.slice(-30).map((h) => (
+                <span key={h.t} className={clsx('num rounded px-1.5 py-0.5 text-[10.5px]', h.ret_pct >= 0 ? 'bg-up/10 text-up' : 'bg-down/10 text-down')}>
+                  {pct(h.ret_pct, 2)}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <div className="text-subtle">Günlük sonuçlar burada birikecek.</div>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 export function FullAnalysis({ blocked }: { blocked: boolean }) {
   const jobsMap = useApp((s) => s.backtestJobs);
   const [busy, setBusy] = useState(false);
@@ -364,7 +446,7 @@ export function FullAnalysis({ blocked }: { blocked: boolean }) {
       <Card className="overflow-hidden border-accent/40">
         <CardHeader
           title="Tek tuşla tam analiz"
-          subtitle="Tek butonla her şey: verileri indirir, binlerce strateji kuralını (coin grupları + coin bazlı) arar, funding arbitrajını 3 farklı şekilde test eder (Binance likit / tüm coinler / çapraz borsa), kalabalık verisini analiz eder ve hepsini hiç görülmemiş dönemdeki sonuca göre sıralayıp en iyisini sunar."
+          subtitle="Tek butonla her şey: verileri indirir, binlerce strateji kuralını (coin grupları + coin bazlı) arar, funding arbitrajını 3 farklı şekilde test eder (Binance likit / tüm coinler / çapraz borsa), tüm coinlerle kendi kendini eğiten bir yapay zeka modeli kurar, kalabalık verisini analiz eder ve hepsini hiç görülmemiş dönemdeki sonuca göre sıralayıp en iyisini sunar."
           icon={<Sparkles className="h-4 w-4 text-accent" />}
         />
         <div className="space-y-4 px-4 pb-5 pt-1">
@@ -409,6 +491,7 @@ export function FullAnalysis({ blocked }: { blocked: boolean }) {
         </div>
       </Card>
 
+      <MlLiveCard />
       {!running && shown?.status === 'failed' && <Card className="p-4 text-[12.5px] text-down">Tam analiz başarısız: {shown.error}</Card>}
       {!running && shown?.status === 'cancelled' && <Card className="p-4 text-[12.5px] text-muted">Son tam analiz durduruldu.</Card>}
 

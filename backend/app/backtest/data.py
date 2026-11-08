@@ -283,6 +283,40 @@ class BinanceHistory:
         return out
 
 
+DAY_MS = 86_400_000
+
+
+async def load_daily_binance(hist: "BinanceHistory", symbols: list[str], days: int, progress: Progress, cancelled: Cancelled,
+                             update: bool = True) -> dict[str, dict[str, np.ndarray]]:
+    """Günlük mumlar (önbellekli). İlk seferde ~1000 gün tek istekte; sonra yalnızca yeni günler."""
+    out: dict[str, dict[str, np.ndarray]] = {}
+    end = now_ms()
+    start = end - days * DAY_MS
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+        for i, sym in enumerate(symbols):
+            if cancelled():
+                raise BacktestCancelled()
+            progress(i / max(1, len(symbols)), f"{sym} günlük mumları ({i + 1}/{len(symbols)})")
+            path = hist.cache_dir / f"{sym}_1d.npz"
+            cached, _ = hist._read_cache(path, FIELDS)
+            data = cached
+            try:
+                if not len(cached["t"]) or (update and int(cached["t"][-1]) < end - 2 * DAY_MS):
+                    since = start if not len(cached["t"]) else int(cached["t"][-1]) + DAY_MS
+                    rows = await hist._get(session, "/fapi/v1/klines",
+                                           {"symbol": sym, "interval": "1d", "startTime": since, "limit": 1000}, weight=5)
+                    closed = [r for r in rows or [] if int(r[6]) < now_ms()]
+                    data = _merge(cached, _rows_to_arrays(closed))
+                    if len(data["t"]):
+                        hist._write_cache(path, data, None)
+            except Exception as exc:
+                log.info("%s günlük mum alınamadı: %s", sym, exc)
+            if len(data["t"]) >= 60:
+                out[sym] = _slice(data, start, end + DAY_MS)
+    progress(1.0, "Günlük veri hazır")
+    return out
+
+
 class SyntheticHistory:
     """YALNIZCA GELİŞTİRME: trend/yatay dönemleri olan sentetik 15 dk geçmiş."""
 
@@ -348,3 +382,10 @@ class SyntheticHistory:
             out.funding[sym] = (ft, np.clip(fr, -0.003, 0.003))
             progress((i + 1) / len(symbols), f"{sym} sentetik geçmiş üretildi")
         return out
+
+    async def load_daily(self, symbols: list[str], days: int, progress: Progress, cancelled: Cancelled) -> dict[str, dict[str, np.ndarray]]:
+        from ..features.indicators import aggregate_bars
+        end = now_ms()
+        data = await self.load(symbols, end - days * DAY_MS, end, progress, cancelled)
+        return {s: aggregate_bars(a, DAY_MS) for s, a in data.bars.items()}
+

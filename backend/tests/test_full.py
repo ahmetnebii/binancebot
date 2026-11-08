@@ -46,6 +46,8 @@ def test_full_job_end_to_end(tmp_path, monkeypatch):
             s[4] = {**s[4], "days": 120 if s[3] != "carry" else 200}
         if s[0] == "lab_coins":
             s[4]["top_n"] = 3
+        if s[3] == "ml":
+            s[4] = {"days": 450}
     monkeypatch.setattr(full, "STEPS", [tuple(s) for s in steps])
     import app.backtest.manager as mgr
     monkeypatch.setattr(mgr, "FULL_STEPS", [tuple(s) for s in steps])
@@ -64,10 +66,10 @@ def test_full_job_end_to_end(tmp_path, monkeypatch):
             time.sleep(1)
         assert r["status"] == "done", r.get("error")
         steps = r["config"]["steps"]
-        assert [s["status"] for s in steps] == ["done"] * 7, steps
+        assert [s["status"] for s in steps] == ["done"] * 8, steps
         rep = r["result"]
         assert rep["summary"] and isinstance(rep["candidates"], list) and len(rep["candidates"]) >= 3
-        assert {c_["kind"] for c_ in rep["candidates"]} == {"lab", "carry"}
+        assert {c_["kind"] for c_ in rep["candidates"]} >= {"lab", "carry"}
         # alt işler kendi sekmelerinde de görünür
         assert len(c.get("/api/backtest/lab/jobs").json()) == 2 and len(c.get("/api/backtest/carry/jobs").json()) == 3
         assert len(c.get("/api/backtest/full/jobs").json()) == 1
@@ -100,3 +102,14 @@ def test_full_job_end_to_end(tmp_path, monkeypatch):
         c.portal.call(ctx.db.bt_save, {k: v for k, v in sub.items() if k != "result"}, res_old)
         tr2 = c.get(f"/api/backtest/full/{j['id']}/trades/{ci}").json()
         assert tr2.get("recomputed") and tr2["count"] > 0
+        # kendi kendini eğiten model: rapordaki aday, işlemler, canlı sanal takip
+        ml_step = next(s_ for s_ in steps if s_["key"] == "ml")
+        ml_job = c.get(f"/api/backtest/jobs/{ml_step['job_id']}").json()
+        assert ml_job["status"] == "done" and ml_job["result"]["model"]["coef"]
+        mi = next((i for i, x in enumerate(rep["candidates"]) if x["kind"] == "ml"), None)
+        if mi is not None:
+            mt = c.get(f"/api/backtest/full/{j['id']}/trades/{mi}").json()
+            assert mt["kind"] == "ml" and isinstance(mt["trades"], list)
+        assert c.post(f"/api/backtest/ml/{ml_step['job_id']}/apply", headers=H).status_code == 200
+        st = c.post("/api/crowd/ml/update", headers=H).json()
+        assert st["active"] and st["paper"]["long"] and st["paper"]["short"]

@@ -479,6 +479,19 @@ Kural canlıda S6 olarak çalışır (`strategies/lab_rules.py`); hızlı tarama
 
 `POST /api/backtest/full` tek iş olarak sırasıyla çalıştırır (her adım kendi sekmesinde de normal bir iş olarak görünür): (1) 3 yıllık mum verisi (ilk 30 coin), (2) strateji laboratuvarı coin grupları (derin), (3) strateji laboratuvarı coin bazlı (ilk 10, normal), (4-6) funding arbitrajı: Binance spot likit coinler / Binance spot tüm coinler / çapraz borsa (Bybit, OKX, Gate spot), (7) kalabalık analizi. Bir adım hata verirse diğerleri devam eder. Sonuç: `{summary, best, trial, candidates[{kind, title, label, details, verdict, forward_ok, oos_apr_pct, oos_return_pct, oos_days, oos_max_dd_pct, job_id}], crowd, warnings}`. Adaylar önce karara (önerilen > zayıf > denemeye değer), sonra aramada hiç kullanılmamış dönemdeki yıllıklandırılmış getiriye göre sıralanır. `GET /api/backtest/full/jobs` listeler. Funding evrenleri: `universe: binance | all | cross` (`all`: hacim filtresi olmadan bütün USDT sürekli vadeli kontratlar; yalnızca funding geçmişi indirilir).
 
+### Kendi kendini eğiten model (ml)
+
+Çapraz kesit modeli (`app/ml`): her gün tüm coinler için 13 özellik (1/3/7/14/30 günlük getiri, 14 günlük oynaklık, RSI, EMA20/50'ye uzaklık, 30 günlük zirveden düşüş, 7 günlük aralık, hacim z-skoru, 3 günlük funding) coinler arasında sıra-normalize edilir; hedef sonraki H günün piyasa ortalamasından arındırılmış getirisidir. Ridge regresyon her ay yalnızca o güne kadar hedefi bilinen verilerle (tampon günlerle) yeniden eğitilir ve o ay boyunca tahmin yapar (walk-forward). Portföy: tahmini en yüksek N coin long, en düşük N coin short, sermayenin yarısı her tarafta, H günde bir yenilenir; komisyon + kayma düşülür. λ, N, H walk-forward döneminin ilk yarısında seçilir, "final" ikinci yarıdır. Karar: final ≥ 120 gün, t ≥ 2,5, yıllık ≥ %10, düşüş ≤ %25, ayların ≥ %60'ı artı → `recommended`; t ≥ 1,8 ve yıllık > %3 → `weak`. Rastgele yürüyüş verisinde sahte sinyal bulmadığı ve gelecek bilgisi kullanmadığı testlerle doğrulanır.
+
+| Metot | Yol | Açıklama |
+|---|---|---|
+| POST | `/api/backtest/ml` | Model analizi işi (`kind: "ml"`); tam analizde 8. adım |
+| POST | `/api/backtest/ml/{id}/apply` | Modeli canlı sanal takibe alır (`kv:ml_model`) |
+| GET | `/api/crowd/ml` | Model durumu ve sanal portföy (günlük long/short seçimi, getiri) |
+| POST | `/api/crowd/ml/update` | Sanal takibi hemen güncelle |
+
+Canlı: toplayıcı her gün (UTC 00:20 sonrası) günlük mumlarla seçimi yapar, önceki seçimin getirisini işler; model 30 günden eskiyse 1000 günlük veriyle kendini yeniden eğitir. Seçim değişince Telegram'a bildirilir.
+
 ### Funding arbitrajı (carry)
 
 Delta-nötr strateji: spotta al + vadelide aynı adette short → fiyat riski yok, funding toplanır. Analiz önbellekteki funding geçmişini kullanır; 8 saatlik pencereler (4 saatlik coinlerde iki ödeme toplanır). Kural: son `k` pencere ortalaması yıllık `enter_apr` üstündeyse gir, `exit_apr` altına inince çık; portföyde ortalaması en yüksek `top_n` coin (tutulan coin ilk 2N'de ve eşik üstünde kaldıkça bırakılmaz). Parametreler eğitimde (%60) seçilir, sonuç test döneminde (%40) raporlanır. Maliyet: giriş + çıkışta spot ve vadeli komisyon + iki bacak kayma; sermaye verimi 1/(1+1/kaldıraç). Karar: test yıllık ≥ %8, düşüş ≤ %5, ayların ≥ %70'i artı → `recommended`; yıllık > %3 → `weak`.
